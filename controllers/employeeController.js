@@ -68,21 +68,24 @@ exports.createEmployee = async (req, res) => {
       targetModel: 'Employee', targetId: employee._id,
     });
 
-    // Persist employee to Google Sheets
+    // Persist employee to Google Sheets (columns match sheet headers exactly)
     persistEntity('createEmployee', {
-      _id:          employee._id.toString(),
-      employeeId:   generatedEmpId,
+      _id:                 employee._id.toString(),
+      employeeId:          generatedEmpId,
       fullName,
       email,
-      phone:        phone || '',
-      department:   department || 'General',
-      designation:  designation || '',
-      company:      company || '',
-      role:         role || 'employee',
+      phone:               phone || '',
+      department:          department || 'General',
+      designation:         designation || '',
+      company:             company || '',
+      role:                role || 'employee',
       password,
-      isActive:     isActive.toString(),
+      isActive:            isActive.toString(),
+      isVerified:          'true',
       assignedAssessments: JSON.stringify(assessmentIds.map(String)),
-      createdAt:    employee.createdAt || new Date().toISOString(),
+      examStats:           JSON.stringify({ totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }),
+      createdAt:           employee.createdAt || new Date().toISOString(),
+      updatedAt:           employee.updatedAt || new Date().toISOString(),
     });
 
     res.status(201).json({ success: true, employee });
@@ -107,16 +110,22 @@ exports.updateEmployee = async (req, res) => {
       targetModel: 'Employee', targetId: employee._id,
     });
 
-    // Persist updated employee to Google Sheets
+    // Persist updated employee to Google Sheets (all columns)
     persistEntity('updateEmployee', {
-      _id:          employee._id.toString(),
-      fullName:     employee.fullName,
-      phone:        employee.phone || '',
-      department:   employee.department || 'General',
-      designation:  employee.designation || '',
-      company:      employee.company || '',
-      role:         employee.role || 'employee',
-      isActive:     employee.isActive !== undefined ? employee.isActive.toString() : 'true',
+      _id:                 employee._id.toString(),
+      employeeId:          employee.employeeId || '',
+      fullName:            employee.fullName,
+      email:               employee.email || '',
+      phone:               employee.phone || '',
+      department:          employee.department || 'General',
+      designation:         employee.designation || '',
+      company:             employee.company || '',
+      role:                employee.role || 'employee',
+      isActive:            employee.isActive !== undefined ? employee.isActive.toString() : 'true',
+      isVerified:          'true',
+      assignedAssessments: JSON.stringify((employee.assignedAssessments || []).map(String)),
+      examStats:           JSON.stringify(employee.examStats || { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }),
+      updatedAt:           new Date().toISOString(),
     });
 
     res.json({ success: true, employee });
@@ -297,21 +306,24 @@ exports.uploadEmployeesExcel = async (req, res) => {
           );
         }
 
-        // Persist to Google Sheets
+        // Persist to Google Sheets (all columns match sheet headers)
         persistEntity('createEmployee', {
-          _id:          employee._id.toString(),
-          employeeId:   generatedEmpId,
+          _id:                 employee._id.toString(),
+          employeeId:          generatedEmpId,
           fullName,
           email,
           phone,
           department,
-          designation:  'Staff',
-          company:      'Enterprise',
-          role:         employee.role,
-          password:     defaultPassword,
-          isActive:     employee.isActive.toString(),
+          designation:         'Staff',
+          company:             'Enterprise',
+          role:                employee.role,
+          password:            defaultPassword,
+          isActive:            employee.isActive.toString(),
+          isVerified:          'true',
           assignedAssessments: JSON.stringify(assessmentIds.map(String)),
-          createdAt:    new Date().toISOString(),
+          examStats:           JSON.stringify({ totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }),
+          createdAt:           new Date().toISOString(),
+          updatedAt:           new Date().toISOString(),
         });
 
         successCount++;

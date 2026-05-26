@@ -150,15 +150,16 @@ function hydrateSheetsData(raw) {
       company:             e.company || '',
       role:                (e.role || 'employee').toLowerCase(),
       isActive:            e.isActive !== 'false' && e.isActive !== false,
-      isVerified:          true,
+      isVerified:          e.isVerified !== 'false' && e.isVerified !== false,
       assignedAssessments: safeParseArray(e.assignedAssessments),
-      loginHistory:        safeParseArray(e.loginHistory),
+      loginHistory:        [],
       examStats:           safeParseObject(e.examStats) || {
         totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0,
       },
       createdAt:           e.createdAt || new Date().toISOString(),
       updatedAt:           e.updatedAt || new Date().toISOString(),
     }));
+
 
     if (adminFromSheets) {
       db.employees = sheetEmployees;
