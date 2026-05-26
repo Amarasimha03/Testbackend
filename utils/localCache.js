@@ -4,7 +4,10 @@
 // ============================================================
 'use strict';
 
-const SHEETS_URL = process.env.GOOGLE_SHEET_URL || '';
+// ── Dynamic SHEETS_URL — read at call time so dotenv is already loaded ──────
+function getSheetsUrl() {
+  return process.env.GOOGLE_SHEET_URL || '';
+}
 
 // ── Unique ID generator ──────────────────────────────────────
 function generateId() {
@@ -13,36 +16,41 @@ function generateId() {
   ).join('');
 }
 
-// ── Initial clean state ──────────────────────────────────────
-const adminId = generateId();
+// ── Initial clean state (built lazily so env vars are read after dotenv) ─────
+function makeInitialState() {
+  return {
+    employees: [
+      {
+        _id: generateId(),
+        fullName: 'System Admin',
+        email: process.env.ADMIN_EMAIL || 'admin@gmail.com',
+        password: process.env.ADMIN_PASSWORD || 'Admin123',
+        role: 'admin',
+        isActive: true,
+        isVerified: true,
+        assignedAssessments: [],
+        loginHistory: [],
+        examStats: { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ],
+    questions:   [],
+    assessments: [],
+    results:     [],
+    violations:  [],
+    auditlogs:   [],
+  };
+}
 
-const INITIAL_STATE = {
-  employees: [
-    {
-      _id: adminId,
-      fullName: 'System Admin',
-      email: process.env.ADMIN_EMAIL || 'admin@gmail.com',
-      password: process.env.ADMIN_PASSWORD || 'Admin123',
-      role: 'admin',
-      isActive: true,
-      isVerified: true,
-      assignedAssessments: [],
-      loginHistory: [],
-      examStats: { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 },
-    },
-  ],
-  questions:    [],
-  assessments:  [],
-  results:      [],
-  violations:   [],
-  auditlogs:    [],
-};
-
-let IN_MEMORY_DB = JSON.parse(JSON.stringify(INITIAL_STATE));
+let IN_MEMORY_DB = null; // lazily initialized
 
 // ── DB accessors ─────────────────────────────────────────────
-function readDB()       { return IN_MEMORY_DB; }
-function writeDB(data)  { IN_MEMORY_DB = data; }
+function readDB() {
+  if (!IN_MEMORY_DB) IN_MEMORY_DB = makeInitialState();
+  return IN_MEMORY_DB;
+}
+function writeDB(data) { IN_MEMORY_DB = data; }
 
 // ── Google Sheets helpers ─────────────────────────────────────
 
@@ -51,6 +59,7 @@ function writeDB(data)  { IN_MEMORY_DB = data; }
  * Returns the parsed JSON response, or null on failure.
  */
 async function sheetsPost(payload) {
+  const SHEETS_URL = getSheetsUrl();
   if (!SHEETS_URL) return null;
   try {
     const url = new URL(SHEETS_URL);
@@ -73,6 +82,7 @@ async function sheetsPost(payload) {
  * GET from Google Apps Script with query params.
  */
 async function sheetsGet(params) {
+  const SHEETS_URL = getSheetsUrl();
   if (!SHEETS_URL) return null;
   try {
     const qs  = new URLSearchParams(params).toString();
@@ -85,14 +95,11 @@ async function sheetsGet(params) {
 }
 
 /**
- * Persist a single entity change to Google Sheets without blocking the
- * request.  Failures are logged but never crash the server.
- *
- * Usage:
- *   persistEntity('createEmployee', { _id, fullName, email, ... })
- *   persistEntity('addQuestion',    { _id, assessmentId, title, ... })
+ * Persist a single entity change to Google Sheets without blocking.
+ * Failures are logged but never crash the server.
  */
 function persistEntity(action, payload) {
+  const SHEETS_URL = getSheetsUrl();
   if (!SHEETS_URL) return;
   sheetsPost({ action, ...payload }).catch((err) =>
     console.error('[persistEntity]', action, err.message)
@@ -101,47 +108,61 @@ function persistEntity(action, payload) {
 
 // ── Startup: load entire DB from Google Sheets ───────────────
 
+function safeParseArray(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim().startsWith('[')) {
+    try { return JSON.parse(val); } catch (_) {}
+  }
+  return [];
+}
+
+function safeParseObject(val) {
+  if (val && typeof val === 'object' && !Array.isArray(val)) return val;
+  if (typeof val === 'string' && val.trim().startsWith('{')) {
+    try { return JSON.parse(val); } catch (_) {}
+  }
+  return null;
+}
+
 /**
- * Maps sheet data rows (plain objects with string values) back into
- * the in-memory format expected by the MockModel layer.
+ * Maps sheet data rows back into the in-memory format.
  */
 function hydrateSheetsData(raw) {
-  const db = JSON.parse(JSON.stringify(INITIAL_STATE));
+  const db = makeInitialState();
 
   if (!raw || typeof raw !== 'object') return db;
 
   // ── employees ──
-  if (Array.isArray(raw.employees)) {
+  if (Array.isArray(raw.employees) && raw.employees.length > 0) {
+    const adminEmail = process.env.ADMIN_EMAIL || 'admin@gmail.com';
     const adminFromSheets = raw.employees.find(
-      (e) => e.role === 'admin' || e.email === (process.env.ADMIN_EMAIL || 'admin@gmail.com')
+      (e) => e.role === 'admin' || e.email === adminEmail
     );
     const sheetEmployees = raw.employees.map((e) => ({
-      _id:                  e._id || generateId(),
-      employeeId:           e.employeeId || '',
-      fullName:             e.fullName || e.name || '',
-      email:                e.email || '',
-      phone:                e.phone || '',
-      password:             e.password || '',
-      department:           e.department || '',
-      designation:          e.designation || '',
-      company:              e.company || '',
-      role:                 (e.role || 'employee').toLowerCase(),
-      isActive:             e.isActive !== 'false' && e.isActive !== false,
-      isVerified:           true,
-      assignedAssessments:  safeParseArray(e.assignedAssessments),
-      loginHistory:         safeParseArray(e.loginHistory),
-      examStats:            safeParseObject(e.examStats) || {
+      _id:                 e._id || generateId(),
+      employeeId:          e.employeeId || '',
+      fullName:            e.fullName || e.name || '',
+      email:               e.email || '',
+      phone:               e.phone || '',
+      password:            e.password || '',
+      department:          e.department || '',
+      designation:         e.designation || '',
+      company:             e.company || '',
+      role:                (e.role || 'employee').toLowerCase(),
+      isActive:            e.isActive !== 'false' && e.isActive !== false,
+      isVerified:          true,
+      assignedAssessments: safeParseArray(e.assignedAssessments),
+      loginHistory:        safeParseArray(e.loginHistory),
+      examStats:           safeParseObject(e.examStats) || {
         totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0,
       },
-      createdAt:            e.createdAt || new Date().toISOString(),
-      updatedAt:            e.updatedAt || new Date().toISOString(),
+      createdAt:           e.createdAt || new Date().toISOString(),
+      updatedAt:           e.updatedAt || new Date().toISOString(),
     }));
 
-    // Replace built-in admin only if sheets already has an admin record
     if (adminFromSheets) {
       db.employees = sheetEmployees;
     } else {
-      // Keep seeded admin, add sheet employees
       db.employees = [db.employees[0], ...sheetEmployees.filter((e) => e.role !== 'admin')];
     }
   }
@@ -169,7 +190,6 @@ function hydrateSheetsData(raw) {
   // ── questions ──
   if (Array.isArray(raw.questions)) {
     db.questions = raw.questions.map((q) => {
-      // Reconstruct options array from flat columns
       const options = [];
       if (q.option1 !== undefined) {
         [q.option1, q.option2, q.option3, q.option4].forEach((txt, idx) => {
@@ -202,23 +222,23 @@ function hydrateSheetsData(raw) {
   // ── results ──
   if (Array.isArray(raw.results)) {
     db.results = raw.results.map((r) => ({
-      _id:            r._id || generateId(),
-      employee:       r.employeeMongoId || r.employeeId || '',
-      employeeName:   r.employeeName || '',
-      employeeEmail:  r.employeeEmail || r.email || '',
-      assessment:     r.assessmentId || '',
-      totalScore:     Number(r.totalScore)    || 0,
-      totalMarks:     Number(r.totalMarks)    || 0,
-      percentage:     Number(r.percentage)    || 0,
-      passed:         r.passed === 'true'     || r.passed === true,
-      status:         r.status               || 'submitted',
-      violationCount: Number(r.violationCount)|| 0,
-      completionTime: Number(r.completionTime)|| 0,
-      startedAt:      r.startedAt            || '',
-      submittedAt:    r.submittedAt          || '',
-      autoSubmitReason:r.autoSubmitReason    || null,
-      answers:        safeParseArray(r.answers),
-      createdAt:      r.createdAt            || new Date().toISOString(),
+      _id:             r._id || generateId(),
+      employee:        r.employeeMongoId || r.employeeId || '',
+      employeeName:    r.employeeName || '',
+      employeeEmail:   r.employeeEmail || r.email || '',
+      assessment:      r.assessmentId || '',
+      totalScore:      Number(r.totalScore)     || 0,
+      totalMarks:      Number(r.totalMarks)     || 0,
+      percentage:      Number(r.percentage)     || 0,
+      passed:          r.passed === 'true'      || r.passed === true,
+      status:          r.status                || 'submitted',
+      violationCount:  Number(r.violationCount) || 0,
+      completionTime:  Number(r.completionTime) || 0,
+      startedAt:       r.startedAt             || '',
+      submittedAt:     r.submittedAt           || '',
+      autoSubmitReason:r.autoSubmitReason      || null,
+      answers:         safeParseArray(r.answers),
+      createdAt:       r.createdAt             || new Date().toISOString(),
     }));
   }
 
@@ -239,20 +259,24 @@ function hydrateSheetsData(raw) {
   return db;
 }
 
-function safeParseArray(val) {
-  if (Array.isArray(val)) return val;
-  if (typeof val === 'string' && val.trim().startsWith('[')) {
-    try { return JSON.parse(val); } catch (_) {}
-  }
-  return [];
-}
-
-function safeParseObject(val) {
-  if (val && typeof val === 'object') return val;
-  if (typeof val === 'string' && val.trim().startsWith('{')) {
-    try { return JSON.parse(val); } catch (_) {}
-  }
-  return null;
+// ── Query matcher ─────────────────────────────────────────────
+// Handles: equality, $in, $gt, $lt, $gte, $lte, $ne, boolean matching
+function matchesQuery(item, query) {
+  return Object.entries(query).every(([key, val]) => {
+    const itemVal = item[key];
+    if (val === null || val === undefined) return itemVal == null;
+    if (typeof val === 'boolean') return itemVal === val || String(itemVal) === String(val);
+    if (val && typeof val === 'object') {
+      if (val.$in)  return val.$in.some((v) => String(itemVal) === String(v));
+      if (val.$nin) return !val.$nin.some((v) => String(itemVal) === String(v));
+      if (val.$gt)  return Number(itemVal) > Number(val.$gt);
+      if (val.$gte) return Number(itemVal) >= Number(val.$gte);
+      if (val.$lt)  return Number(itemVal) < Number(val.$lt);
+      if (val.$lte) return Number(itemVal) <= Number(val.$lte);
+      if (val.$ne)  return String(itemVal) !== String(val.$ne);
+    }
+    return String(itemVal) === String(val);
+  });
 }
 
 // ── QueryChain ───────────────────────────────────────────────
@@ -325,8 +349,29 @@ class QueryChain {
   }
 
   select() { return this; }
-  sort()   { return this; }
+  sort(spec) {
+    if (!Array.isArray(this.data) || !spec) return this;
+    const entries = Object.entries(spec);
+    const sorted = [...this.data].sort((a, b) => {
+      for (const [key, dir] of entries) {
+        const aVal = a[key] ?? '';
+        const bVal = b[key] ?? '';
+        if (aVal < bVal) return dir === -1 ? 1 : -1;
+        if (aVal > bVal) return dir === -1 ? -1 : 1;
+      }
+      return 0;
+    });
+    return new QueryChain(sorted);
+  }
   slice()  { return this; }
+  limit(n) {
+    if (!Array.isArray(this.data)) return this;
+    return new QueryChain(this.data.slice(0, n));
+  }
+  skip(n) {
+    if (!Array.isArray(this.data)) return this;
+    return new QueryChain(this.data.slice(n));
+  }
 
   then(onResolve) {
     return Promise.resolve(onResolve ? onResolve(this.data) : this.data);
@@ -353,10 +398,6 @@ class MockModel {
     }
   }
 
-  static _colName() {
-    return this.name.toLowerCase() + 's';
-  }
-
   static getCollection(name) {
     const db     = readDB();
     const colName = name.toLowerCase() + 's';
@@ -371,6 +412,12 @@ class MockModel {
     writeDB(db);
   }
 
+  toObject() {
+    const copy = { ...this };
+    delete copy.toObject;
+    return copy;
+  }
+
   async save() {
     const colName = this.constructor.name;
     const col     = MockModel.getCollection(colName);
@@ -380,7 +427,9 @@ class MockModel {
     this.updatedAt = new Date().toISOString();
 
     const plain = {};
-    for (const key of Object.keys(this)) plain[key] = this[key];
+    for (const key of Object.keys(this)) {
+      if (key !== 'toObject') plain[key] = this[key];
+    }
 
     if (idx !== -1) col[idx] = plain;
     else            col.push(plain);
@@ -392,23 +441,14 @@ class MockModel {
   static find(query = {}) {
     let list = MockModel.getCollection(this.name);
     if (query && Object.keys(query).length > 0) {
-      list = list.filter((item) =>
-        Object.entries(query).every(([key, val]) => {
-          if (val && typeof val === 'object') {
-            if (val.$in) return val.$in.map(String).includes(String(item[key]));
-          }
-          return String(item[key]) === String(val);
-        })
-      );
+      list = list.filter((item) => matchesQuery(item, query));
     }
     return new QueryChain(list.map((x) => new this(x)));
   }
 
   static findOne(query = {}) {
     const list  = MockModel.getCollection(this.name);
-    const found = list.find((item) =>
-      Object.entries(query).every(([key, val]) => String(item[key]) === String(val))
-    );
+    const found = list.find((item) => matchesQuery(item, query));
     return new QueryChain(found ? new this(found) : null);
   }
 
@@ -472,6 +512,7 @@ class MockModel {
       item = { ...item, ...update };
     }
 
+    item.updatedAt = new Date().toISOString();
     list[idx] = item;
     MockModel.saveCollection(this.name, list);
     return new this(item);
@@ -490,11 +531,7 @@ class MockModel {
     const list = MockModel.getCollection(this.name);
     let count  = 0;
     for (let i = 0; i < list.length; i++) {
-      let match = true;
-      if (query._id && query._id.$in) {
-        match = query._id.$in.map(String).includes(list[i]._id.toString());
-      }
-      if (!match) continue;
+      if (Object.keys(query).length > 0 && !matchesQuery(list[i], query)) continue;
       if (update.$addToSet) {
         for (const [k, v] of Object.entries(update.$addToSet)) {
           if (!list[i][k]) list[i][k] = [];
@@ -523,10 +560,8 @@ class MockModel {
       return { deletedCount: 0 };
     }
     const list     = MockModel.getCollection(this.name);
-    const filtered = list.filter(
-      (item) => !Object.entries(query).every(([k, v]) => String(item[k]) === String(v))
-    );
-    const count = list.length - filtered.length;
+    const filtered = list.filter((item) => !matchesQuery(item, query));
+    const count    = list.length - filtered.length;
     MockModel.saveCollection(this.name, filtered);
     return { deletedCount: count };
   }
@@ -534,22 +569,128 @@ class MockModel {
   static async countDocuments(query = {}) {
     const list = MockModel.getCollection(this.name);
     if (!query || Object.keys(query).length === 0) return list.length;
-    return list.filter((item) =>
-      Object.entries(query).every(([k, v]) => {
-        if (v && typeof v === 'object' && v.$in) return v.$in.map(String).includes(String(item[k]));
-        return String(item[k]) === String(v);
-      })
-    ).length;
+    return list.filter((item) => matchesQuery(item, query)).length;
   }
 
-  static async aggregate() {
-    return [];
+  /**
+   * Real aggregate implementation for dashboard analytics.
+   * Supports: $group with $avg/$sum/$first, $lookup, $unwind, $sort, $match.
+   */
+  static async aggregate(pipeline = []) {
+    const db = readDB();
+    const colName = this.name.toLowerCase() + 's';
+    let data = [...(db[colName] || [])];
+
+    for (const stage of pipeline) {
+      if (stage.$match) {
+        data = data.filter((item) => matchesQuery(item, stage.$match));
+      } else if (stage.$sort) {
+        const entries = Object.entries(stage.$sort);
+        data = data.sort((a, b) => {
+          for (const [key, dir] of entries) {
+            if ((a[key] ?? '') < (b[key] ?? '')) return dir === -1 ? 1 : -1;
+            if ((a[key] ?? '') > (b[key] ?? '')) return dir === -1 ? -1 : 1;
+          }
+          return 0;
+        });
+      } else if (stage.$limit) {
+        data = data.slice(0, stage.$limit);
+      } else if (stage.$skip) {
+        data = data.slice(stage.$skip);
+      } else if (stage.$lookup) {
+        const { from, localField, foreignField, as } = stage.$lookup;
+        const refCol = db[from] || db[from + 's'] || [];
+        data = data.map((item) => {
+          const matches = refCol.filter(
+            (ref) => String(ref[foreignField]) === String(item[localField])
+          );
+          return { ...item, [as]: matches };
+        });
+      } else if (stage.$unwind) {
+        const path = typeof stage.$unwind === 'string'
+          ? stage.$unwind.replace('$', '')
+          : stage.$unwind.path?.replace('$', '');
+        const preserveNull = stage.$unwind?.preserveNullAndEmptyArrays;
+        const next = [];
+        for (const item of data) {
+          const arr = item[path];
+          if (!Array.isArray(arr) || arr.length === 0) {
+            if (preserveNull) next.push({ ...item, [path]: undefined });
+          } else {
+            for (const el of arr) next.push({ ...item, [path]: el });
+          }
+        }
+        data = next;
+      } else if (stage.$group) {
+        const { _id: idExpr, ...accumulators } = stage.$group;
+        const groups = new Map();
+
+        for (const item of data) {
+          // Resolve group key
+          let key;
+          if (idExpr === null) {
+            key = '__all__';
+          } else if (typeof idExpr === 'string' && idExpr.startsWith('$')) {
+            const field = idExpr.slice(1);
+            key = field.includes('.')
+              ? field.split('.').reduce((obj, k) => obj?.[k], item)
+              : item[field];
+          } else {
+            key = idExpr;
+          }
+
+          const keyStr = JSON.stringify(key);
+          if (!groups.has(keyStr)) {
+            groups.set(keyStr, { _id: key, _items: [] });
+          }
+          groups.get(keyStr)._items.push(item);
+        }
+
+        data = Array.from(groups.values()).map(({ _id, _items }) => {
+          const row = { _id };
+          for (const [outField, expr] of Object.entries(accumulators)) {
+            if (expr.$sum !== undefined) {
+              const src = typeof expr.$sum === 'number'
+                ? () => expr.$sum
+                : (it) => {
+                    const f = String(expr.$sum).replace('$', '');
+                    return Number(it[f]) || 0;
+                  };
+              row[outField] = _items.reduce((s, it) => s + src(it), 0);
+            } else if (expr.$avg !== undefined) {
+              const f = String(expr.$avg).replace('$', '');
+              const vals = _items.map((it) => Number(it[f])).filter((v) => !isNaN(v));
+              row[outField] = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+            } else if (expr.$first !== undefined) {
+              const f = String(expr.$first).replace('$', '');
+              row[outField] = _items[0]?.[f];
+            } else if (expr.$last !== undefined) {
+              const f = String(expr.$last).replace('$', '');
+              row[outField] = _items[_items.length - 1]?.[f];
+            } else if (expr.$min !== undefined) {
+              const f = String(expr.$min).replace('$', '');
+              row[outField] = Math.min(..._items.map((it) => Number(it[f])));
+            } else if (expr.$max !== undefined) {
+              const f = String(expr.$max).replace('$', '');
+              row[outField] = Math.max(..._items.map((it) => Number(it[f])));
+            } else if (expr.$push !== undefined) {
+              const f = String(expr.$push).replace('$', '');
+              row[outField] = _items.map((it) => it[f]);
+            }
+          }
+          return row;
+        });
+      }
+    }
+
+    return data;
   }
 }
 
-// Password helpers
+// ── Password helpers ─────────────────────────────────────────
 MockModel.comparePassword = async function (pwd) {
-  if (this.email === 'admin@gmail.com' && pwd.toLowerCase() === 'admin123') {
+  if (this.email === (process.env.ADMIN_EMAIL || 'admin@gmail.com') &&
+      pwd.toLowerCase() === (process.env.ADMIN_PASSWORD || 'admin123').toLowerCase()) {
     return true;
   }
   try {
@@ -560,8 +701,10 @@ MockModel.comparePassword = async function (pwd) {
   } catch (_) {}
   return pwd === this.password;
 };
+
 MockModel.prototype.comparePassword = async function (pwd) {
-  if (this.email === 'admin@gmail.com' && pwd.toLowerCase() === 'admin123') {
+  if (this.email === (process.env.ADMIN_EMAIL || 'admin@gmail.com') &&
+      pwd.toLowerCase() === (process.env.ADMIN_PASSWORD || 'admin123').toLowerCase()) {
     return true;
   }
   try {
@@ -597,10 +740,13 @@ const mongooseMock = {
    */
   async connect() {
     console.log('⚡ Initialising in-memory DB with Google Sheets sync...');
+    const SHEETS_URL = getSheetsUrl();
 
     if (!SHEETS_URL) {
-      console.warn('⚠️  GOOGLE_SHEET_URL not set — running in temporary memory-only mode.');
-      console.log('⚡ In-memory DB ready (no persistence).');
+      console.warn('⚠️  GOOGLE_SHEET_URL not set — running in memory-only mode.');
+      console.log('⚡ In-memory DB ready (no persistence to Google Sheets).');
+      // Ensure DB is initialized
+      readDB();
       return true;
     }
 
@@ -617,11 +763,13 @@ const mongooseMock = {
         console.log(`✅ Google Sheets DB loaded — ${counts}`);
       } else {
         console.warn('⚠️  Google Sheets returned no data. Using initial state.');
-        console.warn('    Response:', JSON.stringify(json).substring(0, 200));
+        console.warn('    Response:', JSON.stringify(json).substring(0, 300));
+        readDB(); // ensure initialized
       }
     } catch (err) {
       console.error('❌ Failed to load from Google Sheets:', err.message);
       console.warn('   Continuing with initial in-memory state.');
+      readDB(); // ensure initialized
     }
 
     console.log('⚡ In-memory DB ready.');
@@ -629,7 +777,7 @@ const mongooseMock = {
   },
 
   async disconnect() {
-    console.log('⚡ DB disconnecting (no flush needed — ops are persisted in real-time).');
+    console.log('⚡ DB disconnecting.');
     return true;
   },
 };
@@ -640,3 +788,4 @@ module.exports              = mongooseMock;
 module.exports.persistEntity = persistEntity;
 module.exports.sheetsPost   = sheetsPost;
 module.exports.sheetsGet    = sheetsGet;
+module.exports.readDB       = readDB;
