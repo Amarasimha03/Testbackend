@@ -68,7 +68,7 @@ exports.createEmployee = async (req, res) => {
       targetModel: 'Employee', targetId: employee._id,
     });
 
-    // Persist employee to Google Sheets (columns match sheet headers exactly)
+    // Persist employee to Google Sheets — 16 columns match sheet headers exactly
     persistEntity('createEmployee', {
       _id:                 employee._id.toString(),
       employeeId:          generatedEmpId,
@@ -82,8 +82,8 @@ exports.createEmployee = async (req, res) => {
       password,
       isActive:            isActive.toString(),
       isVerified:          'true',
-      assignedAssessments: JSON.stringify(assessmentIds.map(String)),
-      examStats:           JSON.stringify({ totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }),
+      assignedAssessments: assessmentIds.map(String),            // raw array — Apps Script will JSON.stringify
+      examStats:           { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }, // raw object
       createdAt:           employee.createdAt || new Date().toISOString(),
       updatedAt:           employee.updatedAt || new Date().toISOString(),
     });
@@ -110,7 +110,7 @@ exports.updateEmployee = async (req, res) => {
       targetModel: 'Employee', targetId: employee._id,
     });
 
-    // Persist updated employee to Google Sheets (all columns)
+    // Persist updated employee to Google Sheets — 16 columns
     persistEntity('updateEmployee', {
       _id:                 employee._id.toString(),
       employeeId:          employee.employeeId || '',
@@ -123,8 +123,8 @@ exports.updateEmployee = async (req, res) => {
       role:                employee.role || 'employee',
       isActive:            employee.isActive !== undefined ? employee.isActive.toString() : 'true',
       isVerified:          'true',
-      assignedAssessments: JSON.stringify((employee.assignedAssessments || []).map(String)),
-      examStats:           JSON.stringify(employee.examStats || { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }),
+      assignedAssessments: (employee.assignedAssessments || []).map(String), // raw array
+      examStats:           employee.examStats || { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }, // raw object
       updatedAt:           new Date().toISOString(),
     });
 
@@ -306,7 +306,7 @@ exports.uploadEmployeesExcel = async (req, res) => {
           );
         }
 
-        // Persist to Google Sheets (all columns match sheet headers)
+        // Persist to Google Sheets — 16 columns match sheet headers
         persistEntity('createEmployee', {
           _id:                 employee._id.toString(),
           employeeId:          generatedEmpId,
@@ -320,8 +320,8 @@ exports.uploadEmployeesExcel = async (req, res) => {
           password:            defaultPassword,
           isActive:            employee.isActive.toString(),
           isVerified:          'true',
-          assignedAssessments: JSON.stringify(assessmentIds.map(String)),
-          examStats:           JSON.stringify({ totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }),
+          assignedAssessments: assessmentIds.map(String),  // raw array
+          examStats:           { totalAttempts: 0, totalPassed: 0, totalFailed: 0, avgScore: 0, totalTimeTaken: 0 }, // raw object
           createdAt:           new Date().toISOString(),
           updatedAt:           new Date().toISOString(),
         });
