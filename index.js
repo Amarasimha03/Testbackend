@@ -1,12 +1,15 @@
-// ── Set default env vars BEFORE loading .env so server never crashes ──────
-// Render's environment variables will override these if set in the dashboard
-process.env.JWT_SECRET     = process.env.JWT_SECRET     || 'onlinetest_jwt_secret_2024_secure_key';
-process.env.JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-process.env.ADMIN_EMAIL    = process.env.ADMIN_EMAIL    || 'admin@gmail.com';
-process.env.ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin123';
-process.env.NODE_ENV       = process.env.NODE_ENV       || 'production';
+// ── Load .env first (override:true ensures .env wins over Render dashboard defaults) ─
+require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
 
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+// ── Hardcoded fallbacks — only used if NOT set in .env OR Render dashboard ─────────
+const GOOGLE_SHEET_URL_DEFAULT = 'https://script.google.com/macros/s/AKfycbx3AnqjtgZDFUYc3XrRNmvMIpfjQKcenuySRcRzzJf5DUVfRNs6CPAOE8_Yy8OmxJpZfg/exec';
+process.env.JWT_SECRET        = process.env.JWT_SECRET        || 'onlinetest_jwt_secret_2024_secure_key';
+process.env.JWT_EXPIRES_IN    = process.env.JWT_EXPIRES_IN    || '7d';
+process.env.ADMIN_EMAIL       = process.env.ADMIN_EMAIL       || 'admin@gmail.com';
+process.env.ADMIN_PASSWORD    = process.env.ADMIN_PASSWORD    || 'Admin123';
+process.env.NODE_ENV          = process.env.NODE_ENV          || 'production';
+process.env.GOOGLE_SHEET_URL  = process.env.GOOGLE_SHEET_URL  || GOOGLE_SHEET_URL_DEFAULT;
+
 const express = require('express');
 const cors = require('cors');
 const localCache = require('./utils/localCache');
@@ -97,7 +100,47 @@ app.use('/api/audit-logs', auditLogRoutes);
 app.use('/api/state', stateSyncRoutes);
 app.use('/api/live-monitoring', liveMonitoringRoutes);
 
-const { protect } = require('./middleware/auth');
+const { protect, adminOnly } = require('./middleware/auth');
+
+// ── Force-reload data from Google Sheets (admin only) ────────
+app.post('/api/sync-db', protect, adminOnly, async (req, res) => {
+  try {
+    await localCache.connect();
+    const { readDB } = require('./utils/localCache');
+    const db = readDB();
+    res.json({
+      success: true,
+      message: 'Database reloaded from Google Sheets',
+      counts: {
+        employees:   db.employees?.length   || 0,
+        assessments: db.assessments?.length || 0,
+        questions:   db.questions?.length   || 0,
+        results:     db.results?.length     || 0,
+        violations:  db.violations?.length  || 0,
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ── DB Status (admin only) ────────────────────────────────────
+app.get('/api/db-status', protect, adminOnly, (req, res) => {
+  const { readDB } = require('./utils/localCache');
+  const db = readDB();
+  res.json({
+    success: true,
+    sheetsUrl: process.env.GOOGLE_SHEET_URL ? '✅ configured' : '❌ missing',
+    counts: {
+      employees:   db.employees?.length   || 0,
+      assessments: db.assessments?.length || 0,
+      questions:   db.questions?.length   || 0,
+      results:     db.results?.length     || 0,
+      violations:  db.violations?.length  || 0,
+    },
+    adminEmail: process.env.ADMIN_EMAIL,
+  });
+});
 
 
 app.post('/api/submit-exam', protect, async (req, res) => {
