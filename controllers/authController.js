@@ -32,8 +32,19 @@ exports.register = async (req, res) => {
 // @POST /api/auth/login
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const employee = await Employee.findOne({ email }).select('+password');
+    let { email, password } = req.body;
+    
+    // Shorthand for admin login
+    if (email.toLowerCase() === 'admin') {
+      email = process.env.ADMIN_EMAIL || 'admin@gmail.com';
+    }
+
+    const employee = await Employee.findOne({
+      $or: [
+        { email: { $regex: new RegExp(`^${email}$`, 'i') } },
+        { employeeId: { $regex: new RegExp(`^${email}$`, 'i') } }
+      ]
+    }).select('+password');
 
     if (!employee || !(await (async () => {
       // If password looks like a bcrypt hash (starts with $2), use bcrypt.compare

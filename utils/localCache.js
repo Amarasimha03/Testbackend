@@ -307,13 +307,22 @@ function hydrateSheetsData(raw) {
 }
 
 // ── Query matcher ─────────────────────────────────────────────
-// Handles: equality, $in, $gt, $lt, $gte, $lte, $ne, boolean matching
+// Handles: equality, $in, $gt, $lt, $gte, $lte, $ne, boolean matching, $or, $regex
 function matchesQuery(item, query) {
   return Object.entries(query).every(([key, val]) => {
+    if (key === '$or' && Array.isArray(val)) {
+      return val.some(subQuery => matchesQuery(item, subQuery));
+    }
+
     const itemVal = item[key];
     if (val === null || val === undefined) return itemVal == null;
     if (typeof val === 'boolean') return itemVal === val || String(itemVal) === String(val);
+    
     if (val && typeof val === 'object') {
+      if (val.$regex) {
+        const regex = new RegExp(val.$regex, val.$options || 'i');
+        return regex.test(String(itemVal || ''));
+      }
       if (val.$in)  return val.$in.some((v) => String(itemVal) === String(v));
       if (val.$nin) return !val.$nin.some((v) => String(itemVal) === String(v));
       if (val.$gt)  return Number(itemVal) > Number(val.$gt);
