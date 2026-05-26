@@ -52,6 +52,7 @@ exports.createEmployee = async (req, res) => {
     const isActive = !status || status === 'Active';
 
     const employee = await Employee.create({
+      _id: generatedEmpId,
       fullName, email, phone, password, department, designation, company,
       employeeId: generatedEmpId,
       role: role || 'employee',
@@ -297,6 +298,7 @@ exports.uploadEmployeesExcel = async (req, res) => {
 
       try {
         const employee = await Employee.create({
+          _id: generatedEmpId,
           fullName,
           email,
           phone,

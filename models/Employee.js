@@ -13,6 +13,7 @@ const loginHistorySchema = new mongoose.Schema({
 
 const employeeSchema = new mongoose.Schema({
   // Core Identity
+  _id: { type: String },
   fullName: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   phone: { type: String, required: true },
