@@ -745,8 +745,10 @@ class MockModel {
 
 // ── Password helpers ─────────────────────────────────────────
 MockModel.comparePassword = async function (pwd) {
-  if (this.email === (process.env.ADMIN_EMAIL || 'admin@gmail.com') &&
-      pwd.toLowerCase() === (process.env.ADMIN_PASSWORD || 'admin123').toLowerCase()) {
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@gmail.com';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'Admin123';
+  if (this.email && this.email.toLowerCase() === adminEmail.toLowerCase() &&
+      (pwd === adminPassword || pwd.toLowerCase() === adminPassword.toLowerCase())) {
     return true;
   }
   try {
@@ -759,8 +761,10 @@ MockModel.comparePassword = async function (pwd) {
 };
 
 MockModel.prototype.comparePassword = async function (pwd) {
-  if (this.email === (process.env.ADMIN_EMAIL || 'admin@gmail.com') &&
-      pwd.toLowerCase() === (process.env.ADMIN_PASSWORD || 'admin123').toLowerCase()) {
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@gmail.com';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'Admin123';
+  if (this.email && this.email.toLowerCase() === adminEmail.toLowerCase() &&
+      (pwd === adminPassword || pwd.toLowerCase() === adminPassword.toLowerCase())) {
     return true;
   }
   try {

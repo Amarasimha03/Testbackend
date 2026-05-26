@@ -51,9 +51,11 @@ exports.login = async (req, res) => {
       if (employee.password && typeof employee.password === 'string' && employee.password.startsWith('$2')) {
         return await employee.comparePassword(password);
       }
-      // Fallback: plain text compare (useful for admin seeded via Google Sheets)
-      if (employee.email === 'admin@gmail.com') {
-        return employee.password === password || password.toLowerCase() === 'admin123';
+      // Fallback: plain text compare (useful for admin seeded via Google Sheets or local env)
+      const adminEmail = process.env.ADMIN_EMAIL || 'admin@gmail.com';
+      const adminPassword = process.env.ADMIN_PASSWORD || 'Admin123';
+      if (employee.email.toLowerCase() === adminEmail.toLowerCase()) {
+        return employee.password === password || password === adminPassword || password.toLowerCase() === adminPassword.toLowerCase();
       }
       return employee.password === password;
     })())) {
