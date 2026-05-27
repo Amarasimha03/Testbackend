@@ -47,21 +47,42 @@ router.get("/result/:resultId", protect, async (req, res) => {
         scorePercent: result.percentage || 0,
         passed: result.passed,
       },
-      questionAnalysis: (result.answers || []).map((qa, index) => {
-        const isCorrect = qa.isCorrect;
-        const isUnanswered = !qa.selectedAnswer || qa.selectedAnswer === 'Not Attempted' || qa.selectedAnswer === 'Not Answered';
-        const status = isCorrect ? "correct" : isUnanswered ? "unattempted" : "wrong";
+      questionAnalysis: (() => {
+        if (result.answers && result.answers.length > 0) {
+          return result.answers.map((qa, index) => {
+            const isCorrect = qa.isCorrect;
+            const isUnanswered = !qa.selectedAnswer || qa.selectedAnswer === 'Not Attempted' || qa.selectedAnswer === 'Not Answered';
+            const status = isCorrect ? "correct" : isUnanswered ? "unattempted" : "wrong";
 
-        return {
-          questionNumber: index + 1,
-          question: qa.questionText || "",
-          options: qa.options || [],
-          selectedAnswer: isUnanswered ? null : qa.selectedAnswer,
-          correctAnswer: qa.correctAnswer || "",
-          isCorrect: qa.isCorrect,
-          status: status,
-        };
-      }),
+            return {
+              questionNumber: index + 1,
+              question: qa.questionText || "",
+              options: qa.options || [],
+              selectedAnswer: isUnanswered ? null : qa.selectedAnswer,
+              correctAnswer: qa.correctAnswer || "",
+              isCorrect: qa.isCorrect,
+              status: status,
+            };
+          });
+        } else if (result.assessment && result.assessment.questions) {
+          return result.assessment.questions.map((q, index) => {
+            const optionsText = (q.options || []).map(o => o.text);
+            const correctOpt = (q.options || []).find(o => o.isCorrect);
+            const correctAnswer = correctOpt ? correctOpt.text : "";
+
+            return {
+              questionNumber: index + 1,
+              question: q.title || "",
+              options: optionsText,
+              selectedAnswer: null,
+              correctAnswer: correctAnswer,
+              isCorrect: false,
+              status: "unattempted",
+            };
+          });
+        }
+        return [];
+      })(),
     };
 
     res.json(responsePayload);
