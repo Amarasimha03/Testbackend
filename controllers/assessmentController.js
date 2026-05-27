@@ -8,6 +8,9 @@ const { persistEntity, IN_MEMORY_DB } = require('../utils/localCache');
 // GET all assessments (admin)
 exports.getAssessments = async (req, res) => {
   try {
+    const mongoose = require('../utils/localCache');
+    await mongoose.connect(); // Force fresh sync from Google Sheets
+
     const assessments = await Assessment.find()
       .populate('createdBy', 'fullName email')
       .populate('questions')
