@@ -31,5 +31,5 @@ exports.adminOnly = (req, res, next) => {
 };
 
 exports.generateToken = (id) => {
-  return jwt.sign({ id }, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+  return jwt.sign({ id }, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '30d' });
 };
