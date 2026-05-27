@@ -207,6 +207,8 @@ exports.deleteAssessment = async (req, res) => {
       IN_MEMORY_DB.assessments = IN_MEMORY_DB.assessments.filter(a => a._id.toString() !== req.params.id);
     }
     if (assessment) {
+      persistEntity('deleteEntity', { sheetName: 'assessments', _id: req.params.id }).catch(()=>{});
+
       await AuditLog.create({
         user: req.user._id, action: 'assessment-deleted',
         description: `Assessment deleted: "${assessment.title}"`,
