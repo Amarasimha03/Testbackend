@@ -22,6 +22,9 @@ exports.getAssessments = async (req, res) => {
 // GET employee's assigned assessments
 exports.getMyAssessments = async (req, res) => {
   try {
+    const mongoose = require('../utils/localCache');
+    await mongoose.connect(); // Force fresh sync from Google Sheets
+
     const employee = await Employee.findById(req.user._id).populate('assignedAssessments');
     if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
 
