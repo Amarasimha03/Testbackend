@@ -17,11 +17,13 @@ function generateId() {
 }
 
 // ── Initial clean state (built lazily so env vars are read after dotenv) ─────
+const STATIC_ADMIN_ID = '000000000000000000000000';
+
 function makeInitialState() {
   return {
     employees: [
       {
-        _id: generateId(),
+        _id: STATIC_ADMIN_ID,
         fullName: 'System Admin',
         email: process.env.ADMIN_EMAIL || 'admin@gmail.com',
         password: process.env.ADMIN_PASSWORD || 'Admin123',
@@ -156,16 +158,36 @@ async function persistEntity(action, payload) {
 
 function safeParseArray(val) {
   if (Array.isArray(val)) return val;
-  if (typeof val === 'string' && val.trim().startsWith('[')) {
-    try { return JSON.parse(val); } catch (_) { }
+  if (typeof val === 'string') {
+    let str = val.trim();
+    if (str.startsWith('"') && str.endsWith('"')) {
+      try {
+        const parsed = JSON.parse(str);
+        if (Array.isArray(parsed)) return parsed;
+        if (typeof parsed === 'string') str = parsed.trim();
+      } catch (_) {}
+    }
+    if (str.startsWith('[')) {
+      try { return JSON.parse(str); } catch (_) { }
+    }
   }
   return [];
 }
 
 function safeParseObject(val) {
   if (val && typeof val === 'object' && !Array.isArray(val)) return val;
-  if (typeof val === 'string' && val.trim().startsWith('{')) {
-    try { return JSON.parse(val); } catch (_) { }
+  if (typeof val === 'string') {
+    let str = val.trim();
+    if (str.startsWith('"') && str.endsWith('"')) {
+      try {
+        const parsed = JSON.parse(str);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        if (typeof parsed === 'string') str = parsed.trim();
+      } catch (_) {}
+    }
+    if (str.startsWith('{')) {
+      try { return JSON.parse(str); } catch (_) { }
+    }
   }
   return null;
 }
