@@ -112,15 +112,26 @@ app.use('/api/sheets', sheetsWebhookRoutes);
 
 const { protect, adminOnly } = require('./middleware/auth');
 
-// ── Force-reload data from Google Sheets (admin only) ────────
+// ── Force-reload data from Google Sheets (admin only) ────────────
 app.post('/api/sync-db', protect, adminOnly, async (req, res) => {
   try {
     await localCache.connect();
-    const { readDB } = require('./utils/localCache');
+    const { readDB, writeDB } = require('./utils/localCache');
     const db = readDB();
+
+    // Dedup employees by email — sheet entry wins over seed when emails match
+    // This fixes the 5-vs-4 employee count when admin appears in both seed and sheet
+    const seen = new Map();
+    db.employees.forEach(e => {
+      const key = (e.email || '').toLowerCase().trim();
+      if (key) seen.set(key, e); // later entry (sheet) overwrites earlier (seed)
+    });
+    db.employees = Array.from(seen.values());
+    writeDB(db);
+
     res.json({
       success: true,
-      message: 'Database reloaded from Google Sheets',
+      message: 'Database reloaded from Google Sheets (deduped)',
       counts: {
         employees:   db.employees?.length   || 0,
         assessments: db.assessments?.length || 0,
