@@ -183,6 +183,8 @@ exports.updateAssessment = async (req, res) => {
       category:     assessment.category || 'General',
       status:       assessment.status,
       maxViolations:assessment.maxViolations,
+      questions:    assessment.questions || [],
+      assignedTo:   assessment.assignedTo || [],
     });
 
     await AuditLog.create({
