@@ -85,7 +85,7 @@ exports.createEmployee = async (req, res) => {
     // Await so the admin knows if it succeeded or failed
     try {
       await persistEntity('createEmployee', {
-        _id:                 employee._id.toString(),
+        _id:                 String(employee._id),
         employeeId:          generatedEmpId,
         fullName,
         email,
@@ -102,7 +102,7 @@ exports.createEmployee = async (req, res) => {
         createdAt:           employee.createdAt || new Date().toISOString(),
         updatedAt:           employee.updatedAt || new Date().toISOString(),
       });
-      console.log('[createEmployee] ✅ Saved to Google Sheets:', employee._id.toString());
+      console.log('[createEmployee] ✅ Saved to Google Sheets:', String(employee._id));
     } catch (sheetErr) {
       console.error('[createEmployee] ❌ Google Sheets save FAILED:', sheetErr.message);
       // Don't fail the request — employee is in memory; sheet will sync on next restart
@@ -132,7 +132,7 @@ exports.updateEmployee = async (req, res) => {
 
     // Persist updated employee to Google Sheets — 16 columns
     persistEntity('updateEmployee', {
-      _id:                 employee._id.toString(),
+      _id:                 String(employee._id),
       employeeId:          employee.employeeId || '',
       fullName:            employee.fullName,
       email:               employee.email || '',
@@ -165,7 +165,9 @@ exports.deleteEmployee = async (req, res) => {
         const results = await Result.find({ employee: id });
         await Result.deleteMany({ employee: id });
         for (const r of results) {
-          persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(() => {});
+          if (r && r._id) {
+            persistEntity('deleteEntity', { sheetName: 'results', _id: String(r._id) }).catch(() => {});
+          }
         }
       } catch (e) {
         console.warn('[deleteEmployee] Non-critical: failed to delete results —', e.message);
@@ -210,7 +212,7 @@ exports.assignAssessment = async (req, res) => {
     const employee = await Employee.findById(req.params.id);
     if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
     
-    const hasAssessment = employee.assignedAssessments.some(id => id.toString() === assessmentId.toString());
+    const hasAssessment = employee.assignedAssessments.some(id => String(id) === String(assessmentId));
     if (!hasAssessment) {
       employee.assignedAssessments.push(assessmentId);
       await employee.save();
@@ -218,7 +220,7 @@ exports.assignAssessment = async (req, res) => {
     
     const assessment = await Assessment.findById(assessmentId);
     if (assessment) {
-      const hasEmployee = assessment.assignedTo.some(id => id.toString() === req.params.id.toString());
+      const hasEmployee = assessment.assignedTo.some(id => String(id) === String(req.params.id));
       if (!hasEmployee) {
         assessment.assignedTo.push(req.params.id);
         await assessment.save();
