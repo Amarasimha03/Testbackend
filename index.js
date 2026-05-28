@@ -44,36 +44,13 @@ const app = express();
 const compression = require('compression');
 app.use(compression());
 
-// CORS helper for localhost dev ports and dotenv config URL
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:3002',
-  'http://localhost:3003',
-  'http://localhost:3004',
-  'http://localhost:3005',
-];
-if (process.env.CLIENT_URL) {
-  allowedOrigins.push(process.env.CLIENT_URL);
-}
-const checkOrigin = (origin, callback) => {
-  if (!origin) return callback(null, true);
-  const isAllowed =
-    allowedOrigins.includes(origin) ||
-    /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ||
-    /^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin) ||
-    /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/.test(origin) ||
-    /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+:\d+$/.test(origin) ||
-    origin.endsWith('.netlify.app') ||
-    origin.endsWith('.onrender.com') ||
-    origin === 'https://cabonlinetest.netlify.app';
-  if (isAllowed) {
-    callback(null, origin || '*');
-  } else {
-    callback(new Error('Not allowed by CORS'));
-  }
-};
-
+app.use(cors({
+  origin: [
+      process.env.CLIENT_URL
+  ],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE"]
+}));
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -81,7 +58,6 @@ const limiter = rateLimit({
   message: 'Too many requests, please try again later.',
 });
 
-app.use(cors({ origin: checkOrigin, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/api', limiter);
@@ -377,14 +353,12 @@ const server = http.createServer(app);
 // Initialize Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: checkOrigin,
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-  transports: ['websocket', 'polling'], // polling fallback for restricted networks
-  maxHttpBufferSize: 1e8,
-  pingTimeout: 60000,
-  pingInterval: 25000,
+      origin: [
+          process.env.CLIENT_URL
+      ],
+      methods: ["GET", "POST"],
+      credentials: true
+  }
 });
 
 // Attach io globally and to express app so controllers can use it
