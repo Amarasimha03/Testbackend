@@ -14,6 +14,9 @@ router.get('/', protect, async (req, res) => {
 
     const activeExams = activeResults.map(r => {
       const empId = r.employee?._id ? String(r.employee._id) : '';
+      const socketData = activeSockets.get(empId);
+      const isCorrectExam = socketData && String(socketData.examId) === String(r.assessment?._id);
+
       return {
         employeeId: empId,
         employeeName: r.employee?.fullName || 'Candidate',
@@ -24,7 +27,7 @@ router.get('/', protect, async (req, res) => {
         cameraActive: r.screenMonitoring?.webcamEnabled || false,
         screenShareStatus: r.screenMonitoring?.webcamEnabled ? 'active' : 'stopped',
         webrtcConnected: false,
-        socketId: activeSockets.get(empId) || '',
+        socketId: isCorrectExam ? socketData.socketId : '',
       };
     }).filter(exam => exam.socketId !== ''); // Only show if they are currently connected
 

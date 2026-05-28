@@ -386,7 +386,7 @@ io.on('connection', (socket) => {
   socket.on('exam:start', (data) => {
     const { employeeId, employeeName, examId } = data;
     socket.join(`exam-${employeeId}`);
-    activeSockets.set(String(employeeId), socket.id);
+    activeSockets.set(String(employeeId), { socketId: socket.id, examId });
     
     // Notify admin
     io.to('admin-room').emit('exam:employee-joined', {
@@ -450,8 +450,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    for (const [empId, sId] of activeSockets.entries()) {
-      if (sId === socket.id) {
+    for (const [empId, sData] of activeSockets.entries()) {
+      if (sData.socketId === socket.id) {
         activeSockets.delete(empId);
         break;
       }
