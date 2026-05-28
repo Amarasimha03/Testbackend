@@ -155,32 +155,50 @@ exports.updateEmployee = async (req, res) => {
 // DELETE employee
 exports.deleteEmployee = async (req, res) => {
   try {
+    console.log(`[deleteEmployee] START — id: ${req.params.id}`);
+
+    console.log('[deleteEmployee] step 1: findByIdAndDelete');
     const employee = await Employee.findByIdAndDelete(req.params.id);
+    console.log(`[deleteEmployee] step 1 done — found: ${employee ? employee.fullName : 'not found'}`);
 
     if (employee) {
       // Cascading delete associated results
+      console.log('[deleteEmployee] step 2: find results');
       const results = await Result.find({ employee: req.params.id });
+      console.log(`[deleteEmployee] step 2 done — results: ${results.length}`);
+
+      console.log('[deleteEmployee] step 3: deleteMany results');
       await Result.deleteMany({ employee: req.params.id });
+      console.log('[deleteEmployee] step 3 done');
+
       for (const r of results) {
         persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(()=>{});
       }
 
       // Cascading delete associated violations
+      console.log('[deleteEmployee] step 4: deleteMany violations');
       await Violation.deleteMany({ employee: req.params.id });
+      console.log('[deleteEmployee] step 4 done');
 
       // Delete employee from Google Sheets
       persistEntity('deleteEntity', { sheetName: 'employees', _id: req.params.id }).catch(()=>{});
 
       // Audit
+      console.log('[deleteEmployee] step 5: create audit log');
       await AuditLog.create({
         user: req.user._id, action: 'employee-deactivated',
         description: `Deleted employee: ${employee.fullName} (${employee.email})`,
         targetModel: 'Employee', targetId: req.params.id,
       });
+      console.log('[deleteEmployee] step 5 done');
     }
 
+    console.log('[deleteEmployee] COMPLETE');
     res.json({ success: true, message: 'Employee and all related records deleted' });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('[deleteEmployee] ERROR:', err.message, err.stack);
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 // PUT assign assessment to employee
