@@ -75,7 +75,10 @@ exports.logViolation = async (req, res) => {
     });
 
     res.status(201).json({ success: true, violation, autoSubmit, violationCount: result?.violationCount });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('[logViolation] ERROR:', err);
+    res.status(500).json({ success: false, message: err.message, error: err.message, stack: err.stack });
+  }
 };
 
 exports.getViolations = async (req, res) => {

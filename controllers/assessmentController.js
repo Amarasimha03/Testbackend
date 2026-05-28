@@ -461,7 +461,7 @@ exports.submitExam = async (req, res) => {
     res.json({ success: true, result });
   } catch (err) {
     console.error('[submitExam] ERROR:', err.message, err.stack);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: err.message, error: err.message, stack: err.stack });
   }
 };
 

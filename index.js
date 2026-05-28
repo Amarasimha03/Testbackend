@@ -2,6 +2,14 @@
 require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
 
 // ── Hardcoded fallbacks — only used if NOT set in .env OR Render dashboard ─────────
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION:", err);
+});
+
 const GOOGLE_SHEET_URL_DEFAULT = 'https://script.google.com/macros/s/AKfycbzhAH4jIu3GopFZ0jMzPSpi-W7tmYIMwDYuc4KFg0Fl7dpjgnFfRgVM5Jnp1Z_-L_l3-A/exec';
 process.env.JWT_SECRET        = process.env.JWT_SECRET        || 'onlinetest_jwt_secret_2024_secure_key';
 process.env.JWT_EXPIRES_IN    = process.env.JWT_EXPIRES_IN    || '7d';
@@ -306,7 +314,8 @@ app.post('/api/submit-exam', protect, async (req, res) => {
 
     res.json({ success: true, message: isUserCancelled ? 'Exam cancelled successfully' : 'Exam auto-submitted successfully' });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    console.error('[/api/submit-exam] ERROR:', err);
+    res.status(500).json({ success: false, message: err.message, error: err.message, stack: err.stack });
   }
 });
 
