@@ -206,39 +206,47 @@ exports.updateAssessment = async (req, res) => {
 
 // DELETE assessment
 exports.deleteAssessment = async (req, res) => {
+  const id = req.params.id;
   try {
-    const assessment = await Assessment.findByIdAndDelete(req.params.id);
+    const assessment = await Assessment.findByIdAndDelete(id);
     
-    // Cascading delete associated questions
-    const questions = await Question.find({ assessment: req.params.id });
-    await Question.deleteMany({ assessment: req.params.id });
-    for (const q of questions) {
-      persistEntity('deleteEntity', { sheetName: 'questions', _id: q._id.toString() }).catch(()=>{});
-    }
+    // Cascading deletes (non-critical)
+    try {
+      const questions = await Question.find({ assessment: id });
+      await Question.deleteMany({ assessment: id });
+      for (const q of questions) {
+        persistEntity('deleteEntity', { sheetName: 'questions', _id: q._id.toString() }).catch(() => {});
+      }
+    } catch (e) { console.warn('[deleteAssessment] questions cleanup failed:', e.message); }
 
-    // Cascading delete associated results
-    const results = await Result.find({ assessment: req.params.id });
-    await Result.deleteMany({ assessment: req.params.id });
-    for (const r of results) {
-      persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(()=>{});
-    }
+    try {
+      const results = await Result.find({ assessment: id });
+      await Result.deleteMany({ assessment: id });
+      for (const r of results) {
+        persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(() => {});
+      }
+    } catch (e) { console.warn('[deleteAssessment] results cleanup failed:', e.message); }
 
-    // Cascading delete associated violations
-    await Violation.deleteMany({ assessment: req.params.id });
+    try {
+      await Violation.deleteMany({ assessment: id });
+    } catch (e) { console.warn('[deleteAssessment] violations cleanup failed:', e.message); }
 
     // Remove from in-memory DB
-    if (IN_MEMORY_DB.assessments) {
-      IN_MEMORY_DB.assessments = IN_MEMORY_DB.assessments.filter(a => a._id.toString() !== req.params.id);
+    if (IN_MEMORY_DB && IN_MEMORY_DB.assessments) {
+      IN_MEMORY_DB.assessments = IN_MEMORY_DB.assessments.filter(a => a._id.toString() !== id);
     }
-    if (assessment) {
-      persistEntity('deleteEntity', { sheetName: 'assessments', _id: req.params.id }).catch(()=>{});
 
-      await AuditLog.create({
-        user: req.user._id, action: 'assessment-deleted',
-        description: `Assessment deleted: "${assessment.title}"`,
-        targetModel: 'Assessment', targetId: req.params.id,
-      });
+    if (assessment) {
+      persistEntity('deleteEntity', { sheetName: 'assessments', _id: id }).catch(() => {});
+      try {
+        await AuditLog.create({
+          user: req.user._id, action: 'assessment-deleted',
+          description: `Assessment deleted: "${assessment.title}"`,
+          targetModel: 'Assessment', targetId: id,
+        });
+      } catch (e) { console.warn('[deleteAssessment] audit log failed:', e.message); }
     }
+
     res.json({ success: true, message: 'Assessment and all related records deleted successfully' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -267,11 +275,12 @@ exports.startExam = async (req, res) => {
     const assessment = await Assessment.findById(assessmentId).populate('questions');
     if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
 
+    const startedAt = new Date();
     const result = await Result.create({
       employee: req.user._id,
       assessment: assessmentId,
       totalMarks: assessment.questions.reduce((sum, q) => sum + q.marks, 0),
-      startedAt: new Date(),
+      startedAt,
       screenMonitoring: {
         webcamEnabled: true,
         audioEnabled: true,
@@ -292,17 +301,22 @@ exports.startExam = async (req, res) => {
       employeeEmail:   req.user.email || '',
       assessmentId:    assessmentId,
       assessmentTitle: assessment.title,
-      startedAt:       result.startedAt ? result.startedAt.toISOString() : new Date().toISOString(),
+      startedAt:       startedAt.toISOString(),
     });
 
-    await AuditLog.create({
-      user: req.user._id, action: 'exam-started',
-      description: `Started exam: "${assessment.title}"`,
-      targetModel: 'Result', targetId: result._id,
-    });
+    try {
+      await AuditLog.create({
+        user: req.user._id, action: 'exam-started',
+        description: `Started exam: "${assessment.title}"`,
+        targetModel: 'Result', targetId: result._id,
+      });
+    } catch (e) { console.warn('[startExam] audit log failed:', e.message); }
 
     res.status(201).json({ success: true, result });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('[startExam] ERROR:', err.message, err.stack);
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 // POST submit exam
@@ -313,9 +327,11 @@ exports.submitExam = async (req, res) => {
     if (!result) return res.status(404).json({ success: false, message: 'Result not found' });
 
     const assessment = await Assessment.findById(result.assessment).populate('questions');
+    if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
+
     let totalScore = 0;
 
-    const processedAnswers = answers.map(ans => {
+    const processedAnswers = (answers || []).map(ans => {
       const question = assessment.questions.find(q => q._id.toString() === ans.questionId);
       if (!question) return ans;
       let isCorrect = false;
@@ -331,10 +347,10 @@ exports.submitExam = async (req, res) => {
         isCorrect = !notAnswered && ans.selectedOptions?.[0] === correctIdx;
         if (isCorrect) marksObtained = question.marks;
         correctAnswerText = question.options[correctIdx]?.text || '';
-        selectedAnswerText = !notAnswered ? question.options[ans.selectedOptions[0]]?.text : 'Not Attempted';
+        selectedAnswerText = !notAnswered ? (question.options[ans.selectedOptions[0]]?.text || '') : 'Not Attempted';
       } else if (question.type === 'multiple-select') {
         const correctIdxs = question.options.map((o, i) => o.isCorrect ? i : null).filter(i => i !== null);
-        isCorrect = !notAnswered && JSON.stringify(ans.selectedOptions?.sort()) === JSON.stringify(correctIdxs.sort());
+        isCorrect = !notAnswered && JSON.stringify([...(ans.selectedOptions || [])].sort()) === JSON.stringify([...correctIdxs].sort());
         if (isCorrect) marksObtained = question.marks;
         correctAnswerText = correctIdxs.map(i => question.options[i]?.text).join(', ');
         selectedAnswerText = !notAnswered ? ans.selectedOptions.map(i => question.options[i]?.text).join(', ') : 'Not Attempted';
@@ -358,13 +374,19 @@ exports.submitExam = async (req, res) => {
     const correctAnswersCount = processedAnswers.filter(a => a.isCorrect).length;
     const wrongAnswersCount = processedAnswers.length - correctAnswersCount;
 
+    // ── Safely coerce dates — in-memory DB stores them as ISO strings, not Date objects ──
+    const submittedAt = new Date();
+    const startedAt = result.startedAt ? new Date(result.startedAt) : submittedAt;
+    const completionTime = Math.round((submittedAt - startedAt) / 60000) || 0;
+    const totalMarks = result.totalMarks || 1; // prevent divide-by-zero
+
     result.answers = processedAnswers;
     result.totalScore = totalScore;
-    result.percentage = Math.round((totalScore / result.totalMarks) * 100);
-    result.passed = result.percentage >= assessment.passingScore;
+    result.percentage = Math.round((totalScore / totalMarks) * 100);
+    result.passed = result.percentage >= (assessment.passingScore || 60);
     result.status = req.body.autoSubmit ? 'auto-submitted' : 'submitted';
-    result.submittedAt = new Date();
-    result.completionTime = Math.round((result.submittedAt - result.startedAt) / 60000);
+    result.submittedAt = submittedAt;
+    result.completionTime = completionTime;
     result.autoSubmitReason = req.body.terminationReason || (req.body.autoSubmit ? 'violations' : null);
     result.correctAnswers = correctAnswersCount;
     result.wrongAnswers = wrongAnswersCount;
@@ -372,64 +394,75 @@ exports.submitExam = async (req, res) => {
 
     const submissionType = req.body.autoSubmit ? 'Automatic' : 'Manual';
 
-    // Persist final result to Google Sheets
-    const employee = await Employee.findById(result.employee);
-    persistEntity('submitResult', {
-      _id:             result._id.toString(),
-      employeeId:      employee ? (employee.employeeId || employee._id.toString()) : '',
-      employeeMongoId: result.employee.toString(),
-      employeeName:    employee ? employee.fullName : '',
-      employeeEmail:   employee ? employee.email : '',
-      assessmentId:    assessment._id.toString(),
-      assessmentTitle: assessment.title,
-      totalScore:      result.totalScore,
-      totalMarks:      result.totalMarks,
-      percentage:      result.percentage,
-      passed:          result.passed,
-      status:          result.status,
-      violationCount:  result.violationCount || 0,
-      completionTime:  result.completionTime || 0,
-      startedAt:       result.startedAt ? result.startedAt.toISOString() : '',
-      submittedAt:     result.submittedAt ? result.submittedAt.toISOString() : '',
-      autoSubmitReason:result.autoSubmitReason || '',
-      submissionType:  submissionType,
-      correctAnswers:  correctAnswersCount,
-      wrongAnswers:    wrongAnswersCount,
-      answers:         JSON.stringify(processedAnswers),
-    });
-
-    // Update employee exam stats
-    const allResults = await Result.find({
-      employee: result.employee,
-      status: { $in: ['submitted', 'auto-submitted'] },
-    });
-    const stats = {
-      totalAttempts: allResults.length,
-      totalPassed:   allResults.filter(r => r.passed).length,
-      totalFailed:   allResults.filter(r => !r.passed).length,
-      avgScore:      allResults.length ? Math.round(allResults.reduce((s, r) => s + r.percentage, 0) / allResults.length) : 0,
-      totalTimeTaken:allResults.reduce((s, r) => s + (r.completionTime || 0), 0),
-    };
-    await Employee.findByIdAndUpdate(result.employee, { examStats: stats });
-
-    // Persist updated employee stats
-    if (employee) {
-      persistEntity('updateEmployee', {
-        _id:       result.employee.toString(),
-        examStats: JSON.stringify(stats),
+    // Non-critical: Persist final result to Google Sheets + update employee stats
+    try {
+      const employee = await Employee.findById(result.employee);
+      persistEntity('submitResult', {
+        _id:             result._id.toString(),
+        employeeId:      employee ? (employee.employeeId || employee._id.toString()) : '',
+        employeeMongoId: result.employee.toString(),
+        employeeName:    employee ? employee.fullName : '',
+        employeeEmail:   employee ? employee.email : '',
+        assessmentId:    assessment._id.toString(),
+        assessmentTitle: assessment.title,
+        totalScore:      result.totalScore,
+        totalMarks:      result.totalMarks,
+        percentage:      result.percentage,
+        passed:          result.passed,
+        status:          result.status,
+        violationCount:  result.violationCount || 0,
+        completionTime:  completionTime,
+        startedAt:       startedAt.toISOString(),
+        submittedAt:     submittedAt.toISOString(),
+        autoSubmitReason:result.autoSubmitReason || '',
+        submissionType:  submissionType,
+        correctAnswers:  correctAnswersCount,
+        wrongAnswers:    wrongAnswersCount,
+        answers:         JSON.stringify(processedAnswers),
       });
+
+      // Update employee exam stats
+      const allResults = await Result.find({
+        employee: result.employee,
+        status: { $in: ['submitted', 'auto-submitted'] },
+      });
+      const stats = {
+        totalAttempts: allResults.length,
+        totalPassed:   allResults.filter(r => r.passed).length,
+        totalFailed:   allResults.filter(r => !r.passed).length,
+        avgScore:      allResults.length ? Math.round(allResults.reduce((s, r) => s + r.percentage, 0) / allResults.length) : 0,
+        totalTimeTaken:allResults.reduce((s, r) => s + (r.completionTime || 0), 0),
+      };
+      await Employee.findByIdAndUpdate(result.employee, { examStats: stats });
+
+      if (employee) {
+        persistEntity('updateEmployee', {
+          _id:       result.employee.toString(),
+          examStats: JSON.stringify(stats),
+        });
+      }
+    } catch (e) {
+      console.warn('[submitExam] Non-critical: sheets/stats update failed —', e.message);
     }
 
-    const action = req.body.autoSubmit ? 'exam-auto-submitted' : 'exam-submitted';
-    await AuditLog.create({
-      user: result.employee, action,
-      description: `Exam "${assessment.title}" ${action}: Score ${result.percentage}% - ${result.passed ? 'PASSED' : 'FAILED'}`,
-      targetModel: 'Result', targetId: result._id,
-      metadata: { percentage: result.percentage, passed: result.passed, completionTime: result.completionTime },
-    });
+    // Non-critical: Audit log
+    try {
+      const action = req.body.autoSubmit ? 'exam-auto-submitted' : 'exam-submitted';
+      await AuditLog.create({
+        user: result.employee, action,
+        description: `Exam "${assessment.title}" ${action}: Score ${result.percentage}% - ${result.passed ? 'PASSED' : 'FAILED'}`,
+        targetModel: 'Result', targetId: result._id,
+        metadata: { percentage: result.percentage, passed: result.passed, completionTime },
+      });
+    } catch (e) {
+      console.warn('[submitExam] Non-critical: audit log failed —', e.message);
+    }
 
     res.json({ success: true, result });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    console.error('[submitExam] ERROR:', err.message, err.stack);
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 // GET dashboard stats
