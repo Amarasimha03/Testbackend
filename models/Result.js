@@ -21,7 +21,7 @@ const resultSchema = new mongoose.Schema({
   wrongAnswers: { type: Number, default: 0 },
   percentage: { type: Number, default: 0 },
   passed: { type: Boolean, default: false },
-  status: { type: String, enum: ['in-progress', 'submitted', 'auto-submitted', 'disqualified'], default: 'in-progress' },
+  status: { type: String, default: 'in-progress' },
   startedAt: { type: Date, default: Date.now },
   submittedAt: { type: Date },
   completionTime: { type: Number }, // minutes
@@ -48,7 +48,7 @@ const resultSchema = new mongoose.Schema({
   },
 
   // Auto-submit reason
-  autoSubmitReason: { type: String, enum: ['timeout', 'violations', 'admin-action', null], default: null },
+  autoSubmitReason: { type: String, default: null },
 }, { timestamps: true });
 
 // Indexes for fast queries
