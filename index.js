@@ -46,7 +46,7 @@ app.use(compression());
 
 app.use(cors({
   origin: [
-      process.env.CLIENT_URL
+      process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com"
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE"]
@@ -354,7 +354,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
       origin: [
-          process.env.CLIENT_URL
+          process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com"
       ],
       methods: ["GET", "POST"],
       credentials: true
