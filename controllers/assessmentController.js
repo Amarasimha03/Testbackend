@@ -256,16 +256,16 @@ exports.startExam = async (req, res) => {
   try {
     const { assessmentId } = req.body;
     
-    // Check if the employee has already completed/submitted this exam
+    // Check if the employee has already completed/submitted/attempted this exam
     const completedExisting = await Result.findOne({ 
       employee: req.user._id, 
       assessment: assessmentId, 
-      status: { $in: ['submitted', 'auto-submitted', 'disqualified'] } 
+      status: { $ne: 'in-progress' } 
     });
     if (completedExisting) {
       return res.status(400).json({ 
         success: false, 
-        message: 'You have already completed this exam. Retakes are not allowed.' 
+        message: 'You have already attempted this exam. Retakes are not allowed.' 
       });
     }
 
