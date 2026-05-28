@@ -154,49 +154,51 @@ exports.updateEmployee = async (req, res) => {
 
 // DELETE employee
 exports.deleteEmployee = async (req, res) => {
+  const id = req.params.id;
   try {
-    console.log(`[deleteEmployee] START — id: ${req.params.id}`);
-
-    console.log('[deleteEmployee] step 1: findByIdAndDelete');
-    const employee = await Employee.findByIdAndDelete(req.params.id);
-    console.log(`[deleteEmployee] step 1 done — found: ${employee ? employee.fullName : 'not found'}`);
+    // Step 1 (CRITICAL): Delete the employee — if this fails, return 500
+    const employee = await Employee.findByIdAndDelete(id);
 
     if (employee) {
-      // Cascading delete associated results
-      console.log('[deleteEmployee] step 2: find results');
-      const results = await Result.find({ employee: req.params.id });
-      console.log(`[deleteEmployee] step 2 done — results: ${results.length}`);
-
-      console.log('[deleteEmployee] step 3: deleteMany results');
-      await Result.deleteMany({ employee: req.params.id });
-      console.log('[deleteEmployee] step 3 done');
-
-      for (const r of results) {
-        persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(()=>{});
+      // Step 2 (non-critical): Delete associated exam results
+      try {
+        const results = await Result.find({ employee: id });
+        await Result.deleteMany({ employee: id });
+        for (const r of results) {
+          persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('[deleteEmployee] Non-critical: failed to delete results —', e.message);
       }
 
-      // Cascading delete associated violations
-      console.log('[deleteEmployee] step 4: deleteMany violations');
-      await Violation.deleteMany({ employee: req.params.id });
-      console.log('[deleteEmployee] step 4 done');
+      // Step 3 (non-critical): Delete associated violations
+      try {
+        const ViolationModel = require('../models/Violation');
+        await ViolationModel.deleteMany({ employee: id });
+      } catch (e) {
+        console.warn('[deleteEmployee] Non-critical: failed to delete violations —', e.message);
+      }
 
-      // Delete employee from Google Sheets
-      persistEntity('deleteEntity', { sheetName: 'employees', _id: req.params.id }).catch(()=>{});
+      // Step 4 (non-critical): Delete from Google Sheets
+      persistEntity('deleteEntity', { sheetName: 'employees', _id: id }).catch(() => {});
 
-      // Audit
-      console.log('[deleteEmployee] step 5: create audit log');
-      await AuditLog.create({
-        user: req.user._id, action: 'employee-deactivated',
-        description: `Deleted employee: ${employee.fullName} (${employee.email})`,
-        targetModel: 'Employee', targetId: req.params.id,
-      });
-      console.log('[deleteEmployee] step 5 done');
+      // Step 5 (non-critical): Write audit log
+      try {
+        await AuditLog.create({
+          user: req.user._id,
+          action: 'employee-deactivated',
+          description: `Deleted employee: ${employee.fullName} (${employee.email})`,
+          targetModel: 'Employee',
+          targetId: id,
+        });
+      } catch (e) {
+        console.warn('[deleteEmployee] Non-critical: audit log failed —', e.message);
+      }
     }
 
-    console.log('[deleteEmployee] COMPLETE');
     res.json({ success: true, message: 'Employee and all related records deleted' });
   } catch (err) {
-    console.error('[deleteEmployee] ERROR:', err.message, err.stack);
+    console.error('[deleteEmployee] CRITICAL ERROR:', err.message, err.stack);
     res.status(500).json({ success: false, message: err.message });
   }
 };
