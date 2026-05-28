@@ -159,7 +159,7 @@ app.post('/api/submit-exam', protect, async (req, res) => {
     const Employee = require('./models/Employee');
     const Assessment = require('./models/Assessment');
     const AuditLog = require('./models/AuditLog');
-    const { persistEntity } = require('./utils/localCache');
+    const { persistEntity, IN_MEMORY_DB } = require('./utils/localCache');
 
     let result;
     if (resultId) {
