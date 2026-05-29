@@ -623,6 +623,10 @@ async function startServer() {
     res.json({ status: 'ok', uptime: process.uptime(), timestamp: new Date().toISOString() });
   });
 
+  app.get('/ping', (req, res) => {
+    res.status(200).send('pong');
+  });
+
   const PORT = process.env.PORT || 5000;
   server.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
