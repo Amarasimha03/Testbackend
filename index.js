@@ -563,6 +563,40 @@ async function startServer() {
       socket.emit('heartbeat-ack');
     });
 
+    // ✅ Fix 2 — Admin force-terminates an employee's exam
+    socket.on('admin:terminate-exam', ({ employeeId, employeeSocketId }) => {
+      console.log(`[Server] Admin terminating exam for employee ${employeeId}, socket ${employeeSocketId}`);
+
+      // Strategy 1: target the known socket ID directly
+      if (employeeSocketId) {
+        const targetSocket = io.sockets.sockets.get(employeeSocketId);
+        if (targetSocket) {
+          targetSocket.emit('force-disconnect');
+          console.log(`[Server] force-disconnect sent to socket ${employeeSocketId}`);
+        }
+      }
+
+      // Strategy 2: use activeSockets map fallback
+      const record = activeSockets.get(String(employeeId));
+      if (record && record.socketId !== employeeSocketId) {
+        const targetSocket = io.sockets.sockets.get(record.socketId);
+        if (targetSocket) {
+          targetSocket.emit('force-disconnect');
+          console.log(`[Server] force-disconnect sent via activeSockets to ${record.socketId}`);
+        }
+      }
+
+      // Notify admin room so their UI cleans up
+      io.to('admin-room').emit('exam:completed', {
+        employeeId: String(employeeId),
+        terminationReason: 'Admin Terminated',
+        status: 'terminated',
+      });
+
+      // Remove from active sockets registry
+      activeSockets.delete(String(employeeId));
+    });
+
     socket.on('disconnect', () => {
       let disconnectedEmpId = null;
       for (const [empId, sData] of activeSockets.entries()) {
