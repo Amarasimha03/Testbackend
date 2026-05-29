@@ -29,6 +29,7 @@ const clientBuildPath = path.join(__dirname, 'build');
 // ── Startup diagnostics ─────────────────────────────────────
 console.log('🔍 ENV CHECK:');
 console.log('  JWT_SECRET:', process.env.JWT_SECRET ? '✅ SET' : '❌ MISSING');
+console.log('  CLIENT_URL:', process.env.CLIENT_URL ? '✅ ' + process.env.CLIENT_URL : '❌ MISSING');
 console.log('  GOOGLE_SHEET_URL:', process.env.GOOGLE_SHEET_URL ? '✅ SET' : '⚠️  Not set (memory-only mode)');
 console.log('  ADMIN_EMAIL:', process.env.ADMIN_EMAIL);
 console.log('  NODE_ENV:', process.env.NODE_ENV);
@@ -67,10 +68,10 @@ app.use(compression());
 
 // ── CORS: Bulletproof — allow any origin, handle OPTIONS preflight ──────────────
 const ALLOWED_ORIGINS = [
-  'https://caponlinetest.onrender.com',
+  process.env.CLIENT_URL,
   'http://localhost:3000',
   'http://localhost:5000',
-];
+].filter(Boolean); // removes undefined if CLIENT_URL not set
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
