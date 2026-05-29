@@ -53,11 +53,34 @@ const app = express();
 const compression = require('compression');
 app.use(compression());
 
-app.use(cors({
-  origin: true,
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-}));
+// ── CORS: Bulletproof — allow any origin, handle OPTIONS preflight ──────────────
+const ALLOWED_ORIGINS = [
+  'https://caponlinetest.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:5000',
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  // Allow the requesting origin if it's in our list, otherwise allow all
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control'
+  );
+  res.setHeader('Access-Control-Max-Age', '86400'); // 24h preflight cache
+  // Respond immediately to preflight
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
