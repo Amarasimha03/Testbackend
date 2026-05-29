@@ -201,7 +201,7 @@ const THEORY_TOPICS = [
     marks: 1
   },
   {
-    keywords: ['database', 'data', 'storage', 'nosql', 'mongodb'],
+    keywords: ['database', 'data', 'storage', 'nosql', 'sheets'],
     question: 'What is the primary difference between SQL and NoSQL databases?',
     options: [
       'SQL databases are relational and table-based; NoSQL are non-relational and document/key-value based.',

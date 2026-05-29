@@ -1,31 +1,41 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/auth');
-const Result = require('../models/Result');
+const { querySheets } = require('../services/googleSheets');
 
 // GET live monitoring active exam sessions
 router.get('/', protect, async (req, res) => {
   try {
-    const activeResults = await Result.find({ status: 'in-progress' })
-      .populate('employee', 'fullName employeeId email')
-      .populate('assessment', 'title duration maxViolations');
+    const resRes = await querySheets('getResults');
+    const activeResults = (resRes.data || []).filter(r => r.status === 'in-progress');
+
+    const empRes = await querySheets('getEmployees');
+    const employees = empRes.data || [];
+    const assRes = await querySheets('getAssessments');
+    const assessments = assRes.data || [];
 
     const activeSockets = req.app.get('activeSockets') || new Map();
 
     const activeExams = activeResults.map(r => {
-      const empId = r.employee?._id ? String(r.employee._id) : '';
+      const e = employees.find(e => String(e._id) === String(r.employee));
+      const a = assessments.find(a => String(a._id) === String(r.assessment));
+
+      const empId = e?._id ? String(e._id) : String(r.employee);
       const socketData = activeSockets.get(empId);
-      const isCorrectExam = socketData && String(socketData.examId) === String(r.assessment?._id);
+      const isCorrectExam = socketData && String(socketData.examId) === String(a?._id || r.assessment);
+
+      let sm = {};
+      try { sm = typeof r.screenMonitoring === 'string' ? JSON.parse(r.screenMonitoring) : (r.screenMonitoring || {}); } catch(e){}
 
       return {
         employeeId: empId,
-        employeeName: r.employee?.fullName || 'Candidate',
-        assessmentId: r.assessment?._id || '',
-        assessmentTitle: r.assessment?.title || 'Exam',
+        employeeName: e?.fullName || r.employeeName || 'Candidate',
+        assessmentId: a?._id || r.assessment || '',
+        assessmentTitle: a?.title || 'Exam',
         violationCount: r.violationCount || 0,
         startedAt: r.startedAt,
-        cameraActive: r.screenMonitoring?.webcamEnabled || false,
-        screenShareStatus: r.screenMonitoring?.webcamEnabled ? 'active' : 'stopped',
+        cameraActive: sm.webcamEnabled === true || sm.webcamEnabled === 'true',
+        screenShareStatus: (sm.webcamEnabled === true || sm.webcamEnabled === 'true') ? 'active' : 'stopped',
         webrtcConnected: false,
         socketId: isCorrectExam ? socketData.socketId : '',
       };

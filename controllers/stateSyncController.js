@@ -1,53 +1,11 @@
-// controllers/stateSyncController.js
-// Bridges Express API <-> Google Apps Script for persistent state
-
-const SHEETS_URL = process.env.GOOGLE_APPS_SCRIPT_STATE_URL || process.env.GOOGLE_SHEET_URL || 'https://script.google.com/macros/s/AKfycbzhAH4jIu3GopFZ0jMzPSpi-W7tmYIMwDYuc4KFg0Fl7dpjgnFfRgVM5Jnp1Z_-L_l3-A/exec';
-
-const sheetsPost = async (payload) => {
-  if (!SHEETS_URL) {
-    console.warn('[StateSync] GOOGLE_APPS_SCRIPT_STATE_URL not set – skipping.');
-    return null;
-  }
-  try {
-    const url = new URL(SHEETS_URL);
-    if (payload && payload.action) {
-      url.searchParams.set('action', payload.action);
-    }
-    const res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return await res.json();
-  } catch (err) {
-    console.error('StateSync POST error:', err);
-    return null;
-  }
-};
-
-const sheetsGet = async (params) => {
-  if (!SHEETS_URL) return null;
-  try {
-    const qs = new URLSearchParams(params).toString();
-    const res = await fetch(`${SHEETS_URL}?${qs}`);
-    return await res.json();
-  } catch (err) {
-    console.error('StateSync GET error:', err);
-    return null;
-  }
-};
-
-// ===========================================================
-// USER SESSION
-// ===========================================================
+const { querySheets } = require('../services/googleSheets');
 
 exports.saveSession = async (req, res) => {
   try {
     const { userId, name, email, role, status } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
 
-    const result = await sheetsPost({
-      action: 'saveSession',
+    const result = await querySheets('saveSession', {
       userId,
       name: name || req.user?.fullName,
       email: email || req.user?.email,
@@ -65,9 +23,7 @@ exports.saveSession = async (req, res) => {
 exports.getSession = async (req, res) => {
   try {
     const { userId } = req.params;
-    const result = await sheetsGet({ action: 'getSession', userId });
-    // Return 200 even when not found — missing session is normal (first login etc.)
-    // Returning 404 causes Axios to throw, polluting the console unnecessarily
+    const result = await querySheets('getSession', { userId });
     if (!result?.success) return res.json({ success: false, message: 'No session found' });
     res.json({ success: true, session: result.session });
   } catch (err) {
@@ -75,17 +31,12 @@ exports.getSession = async (req, res) => {
   }
 };
 
-// ===========================================================
-// EXAM PROGRESS
-// ===========================================================
-
 exports.saveExamProgress = async (req, res) => {
   try {
     const { userId, examId, questionId, selectedAnswer, answerLabel } = req.body;
     if (!userId || !examId) return res.status(400).json({ success: false, message: 'userId and examId required' });
 
-    const result = await sheetsPost({
-      action: 'saveExam',
+    const result = await querySheets('saveExam', {
       userId,
       examId,
       questionId: questionId || '',
@@ -102,7 +53,7 @@ exports.saveExamProgress = async (req, res) => {
 exports.getExamProgress = async (req, res) => {
   try {
     const { userId } = req.params;
-    const result = await sheetsGet({ action: 'getExam', userId });
+    const result = await querySheets('getExam', { userId });
     if (!result?.success) return res.json({ success: true, examData: [] });
     res.json({ success: true, examData: result.examData || [] });
   } catch (err) {
@@ -115,15 +66,8 @@ exports.saveExamMeta = async (req, res) => {
     const { userId, examId, phase, currentQ, timer, resultId, violations } = req.body;
     if (!userId || !examId) return res.status(400).json({ success: false, message: 'userId and examId required' });
 
-    const result = await sheetsPost({
-      action: 'saveExamMeta',
-      userId,
-      examId,
-      phase,
-      currentQ,
-      timer,
-      resultId,
-      violations
+    const result = await querySheets('saveExamMeta', {
+      userId, examId, phase, currentQ, timer, resultId, violations
     });
 
     res.json({ success: true, message: 'Exam meta saved', result });
@@ -135,7 +79,7 @@ exports.saveExamMeta = async (req, res) => {
 exports.getExamMeta = async (req, res) => {
   try {
     const { userId, examId } = req.params;
-    const result = await sheetsGet({ action: 'getExamMeta', userId, examId });
+    const result = await querySheets('getExamMeta', { userId, examId });
     if (!result?.success) return res.json({ success: true, meta: null });
     res.json({ success: true, meta: result.meta });
   } catch (err) {
@@ -143,17 +87,12 @@ exports.getExamMeta = async (req, res) => {
   }
 };
 
-// ===========================================================
-// MONITORING STATE
-// ===========================================================
-
 exports.saveMonitorState = async (req, res) => {
   try {
     const { userId, cameraStatus, screenShareStatus, warningCount } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
 
-    const result = await sheetsPost({
-      action: 'saveMonitoring',
+    const result = await querySheets('saveMonitoring', {
       userId,
       cameraStatus: cameraStatus || 'unknown',
       screenShareStatus: screenShareStatus || 'unknown',
@@ -169,7 +108,7 @@ exports.saveMonitorState = async (req, res) => {
 exports.getMonitorState = async (req, res) => {
   try {
     const { userId } = req.params;
-    const result = await sheetsGet({ action: 'getMonitoring', userId });
+    const result = await querySheets('getMonitoring', { userId });
     if (!result?.success) return res.json({ success: true, monitoring: null });
     res.json({ success: true, monitoring: result.monitoring });
   } catch (err) {

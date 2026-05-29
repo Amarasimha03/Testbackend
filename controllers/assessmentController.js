@@ -1,565 +1,363 @@
-const Assessment = require('../models/Assessment');
-const Question = require('../models/Question');
-const Result = require('../models/Result');
-const Employee = require('../models/Employee');
-const AuditLog = require('../models/AuditLog');
-const Violation = require('../models/Violation');
-const { persistEntity, IN_MEMORY_DB } = require('../utils/localCache');
+const { querySheets } = require('../services/googleSheets');
+const { clearCache } = require('../middleware/cache');
 
-// GET all assessments (admin)
 exports.getAssessments = async (req, res) => {
   try {
-    const mongoose = require('../utils/localCache');
-    await mongoose.connect(); // Force fresh sync from Google Sheets
+    const [resData, qRes] = await Promise.all([
+      querySheets('getAssessments'),
+      querySheets('getQuestions')
+    ]);
+    
+    let assessments = resData.data || [];
+    const allQuestions = qRes.data || [];
+    
+    assessments = assessments.map(a => {
+      const aId = String(a._id);
+      const matchedQuestions = allQuestions.filter(q => String(q.assessment) === aId || String(q.assessmentId) === aId);
+      
+      let assTo = [];
+      try { assTo = typeof a.assignedTo === 'string' ? JSON.parse(a.assignedTo) : (a.assignedTo || []); } catch(e){}
+      return { ...a, questions: matchedQuestions, assignedTo: assTo };
+    });
 
-    const assessments = await Assessment.find()
-      .populate('createdBy', 'fullName email')
-      .populate('questions')
-      .sort({ createdAt: -1 });
+    // Reverse sort by createdAt
+    assessments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
     res.json({ success: true, assessments });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  } catch (err) { 
+    res.status(500).json({ success: false, message: err.message }); 
+  }
 };
 
-// GET employee's assigned assessments
 exports.getMyAssessments = async (req, res) => {
   try {
-    const mongoose = require('../utils/localCache');
-    await mongoose.connect(); // Force fresh sync from Google Sheets
-
-    const employee = await Employee.findById(req.user._id).populate('assignedAssessments');
+    const empRes = await querySheets('getEmployees');
+    const employees = empRes.data || [];
+    const employee = employees.find(e => String(e._id) === String(req.user._id));
+    
     if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
 
-    const results = await Result.find({ employee: req.user._id });
-    const completedIds = results
+    const [resultRes, assRes, qRes] = await Promise.all([
+      querySheets('getResults'),
+      querySheets('getAssessments'),
+      querySheets('getQuestions')
+    ]);
+    
+    const allResults = resultRes.data || [];
+    const myResults = allResults.filter(r => String(r.employeeMongoId || r.employee) === String(req.user._id));
+    
+    const completedIds = myResults
       .filter(r => r.status !== 'in-progress')
-      .map(r => r.assessment ? r.assessment.toString() : '');
+      .map(r => String(r.assessmentId || r.assessment || ''));
 
-    const rawAssessments = employee.assignedAssessments || [];
+    // Employee's assigned assessments are stored as an array of IDs in 'assignedAssessments'
+    let assignedIds = [];
+    try {
+      if (typeof employee.assignedAssessments === 'string') {
+        assignedIds = JSON.parse(employee.assignedAssessments);
+      } else if (Array.isArray(employee.assignedAssessments)) {
+        assignedIds = employee.assignedAssessments;
+      }
+    } catch(e) {}
 
-    const assessments = rawAssessments.map(a => {
-      const plain = typeof a.toObject === 'function' ? a.toObject() : { ...a };
-      const aId = (plain._id || a._id || '').toString();
+    const allAssessments = assRes.data || [];
+    const allQuestions = qRes.data || [];
+    
+    const myAssessments = allAssessments.filter(a => {
+      let assTo = [];
+      try {
+        if (typeof a.assignedTo === 'string') {
+          assTo = JSON.parse(a.assignedTo);
+        } else if (Array.isArray(a.assignedTo)) {
+          assTo = a.assignedTo;
+        }
+      } catch (e) {}
+      const assToMapped = assTo.map(String);
+      return assignedIds.includes(String(a._id)) || assToMapped.includes(String(req.user._id));
+    });
+
+    const mapped = myAssessments.map(a => {
+      const aId = String(a._id);
+      const matchedQuestions = allQuestions.filter(q => String(q.assessment) === aId || String(q.assessmentId) === aId);
+
+      // Get all results for this assessment, sort descending by _id (timestamp)
+      const assessmentResults = myResults.filter(r => String(r.assessmentId || r.assessment) === aId);
+      assessmentResults.sort((x, y) => String(y._id).localeCompare(String(x._id)));
+
+      // Prefer completed/submitted result over in-progress
+      const latestCompleted = assessmentResults.find(r => r.status !== 'in-progress');
+      const chosenResult = latestCompleted || assessmentResults[0] || null;
+
+      let parsedResult = null;
+      if (chosenResult) {
+        parsedResult = {
+          ...chosenResult,
+          totalScore: parseInt(chosenResult.totalScore, 10) || 0,
+          totalMarks: parseInt(chosenResult.totalMarks, 10) || 0,
+          percentage: parseInt(chosenResult.percentage, 10) || 0,
+          passed: String(chosenResult.passed).toLowerCase() === 'true'
+        };
+      }
+
       return {
-        ...plain,
+        ...a,
+        questions: matchedQuestions,
         status: completedIds.includes(aId) ? 'completed' : 'pending',
-        result: results.find(r => r.assessment && r.assessment.toString() === aId) || null,
+        result: parsedResult,
       };
     });
 
-    res.json({ success: true, assessments });
+    res.json({ success: true, assessments: mapped });
   } catch (err) {
     console.error('GET MY ASSESSMENTS ERROR:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// GET single assessment
 exports.getAssessment = async (req, res) => {
   try {
-    const assessment = await Assessment.findById(req.params.id).populate('questions');
+    const assRes = await querySheets('getAssessments');
+    const allAssessments = assRes.data || [];
+    const assessment = allAssessments.find(a => String(a._id) === String(req.params.id));
+    
     if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
+    
+    // Fetch questions
+    const qRes = await querySheets('getQuestions', req.params.id ? { assessmentId: req.params.id } : {});
+    const allQuestions = qRes.data || [];
+    let questions = allQuestions.filter(q => String(q.assessment) === String(req.params.id) || String(q.assessmentId) === String(req.params.id));
+    
+    // Parse options correctly
+    const parsedQuestions = questions.map(q => {
+      if (typeof q.options === 'string') {
+        try { q.options = JSON.parse(q.options); } catch(e) {}
+      }
+      if (Array.isArray(q.options) && q.options.length > 0 && typeof q.options[0] !== 'object') {
+        const correctIdx = parseInt(q.correctOptionIndex !== undefined ? q.correctOptionIndex : 0, 10);
+        q.options = q.options.map((opt, idx) => ({ text: String(opt), isCorrect: idx === correctIdx }));
+      }
+      if (!Array.isArray(q.options) || q.options.length === 0) {
+        const opts = [];
+        const correctIdx = parseInt(q.correctOptionIndex !== undefined ? q.correctOptionIndex : -1, 10);
+        if (q.option1 !== undefined && q.option1 !== '') opts.push({ text: q.option1, isCorrect: correctIdx === 0 });
+        if (q.option2 !== undefined && q.option2 !== '') opts.push({ text: q.option2, isCorrect: correctIdx === 1 });
+        if (q.option3 !== undefined && q.option3 !== '') opts.push({ text: q.option3, isCorrect: correctIdx === 2 });
+        if (q.option4 !== undefined && q.option4 !== '') opts.push({ text: q.option4, isCorrect: correctIdx === 3 });
+        q.options = opts;
+      }
+      // Ensure all options are objects
+      if (Array.isArray(q.options)) {
+        q.options = q.options.map((o, idx) => {
+          if (typeof o === 'object' && o !== null) {
+            return { text: o.text || '', isCorrect: !!o.isCorrect };
+          }
+          return { text: String(o), isCorrect: idx === 0 };
+        });
+      }
+      q.title = q.title || q.question || '';
+      return q;
+    });
+
     if (req.user.role === 'employee') {
-      let questions = assessment.questions;
-      if (assessment.isRandomized) questions = questions.sort(() => Math.random() - 0.5);
-      const sanitized = questions.map(q => ({
-        _id: q._id, title: q.title, type: q.type,
-        options: q.options.map(o => ({ _id: o._id, text: o.text })),
-        marks: q.marks, difficulty: q.difficulty,
-      }));
-      return res.json({ success: true, assessment: { ...assessment.toObject(), questions: sanitized } });
+      let emQs = [...parsedQuestions];
+      if (assessment.isRandomized) emQs = emQs.sort(() => Math.random() - 0.5);
+      
+      const sanitized = emQs.map(q => {
+        return {
+          _id: q._id || q.id || String(Math.random()), title: q.title, type: q.type,
+          options: (q.options || []).map((o, oIdx) => ({ _id: o._id || o.id || String(oIdx), text: o.text })),
+          marks: q.marks, difficulty: q.difficulty,
+        };
+      });
+      assessment.questions = sanitized;
+      return res.json({ success: true, assessment });
     }
+    
+    assessment.questions = parsedQuestions;
     res.json({ success: true, assessment });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
-// POST create assessment
 exports.createAssessment = async (req, res) => {
   try {
-    const assessment = new Assessment({ ...req.body, createdBy: req.user._id });
-    const employees = await Employee.find({ role: 'employee', isActive: true });
-    const employeeIds = employees.map(emp => emp._id);
-    assessment.assignedTo = employeeIds;
-    await assessment.save();
-    // Sync assessment to in-memory DB
-    if (IN_MEMORY_DB.assessments) {
-      IN_MEMORY_DB.assessments.push(assessment.toObject ? assessment.toObject() : { ...assessment });
-    } else {
-      IN_MEMORY_DB.assessments = [assessment.toObject ? assessment.toObject() : { ...assessment }];
+    const assessmentData = {
+      ...req.body,
+      createdBy: req.user._id,
+      questions: req.body.questions || [],
+      assignedTo: req.body.assignedTo || [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!assessmentData._id || String(assessmentData._id).trim() === '') {
+      assessmentData._id = Date.now().toString();
     }
 
-    if (employeeIds.length > 0) {
-      await Employee.updateMany(
-        { _id: { $in: employeeIds } },
-        { $addToSet: { assignedAssessments: assessment._id } }
-      );
+    // Auto-assign to all active employees
+    const empRes = await querySheets('getEmployees');
+    const activeEmployees = (empRes.data || []).filter(e => e.role === 'employee' && (e.isActive === true || e.isActive === 'true'));
+    assessmentData.assignedTo = activeEmployees.map(e => e._id);
 
-      // Persist assignment records to Google Sheets (one per employee)
-      for (const emp of employees) {
-        persistEntity('assignAssessment', {
-          employeeId:      emp.employeeId || emp._id.toString(),
-          employeeMongoId: emp._id.toString(),
-          assessmentId:    assessment._id.toString(),
-          examName:        assessment.title,
-          status:          'pending',
-          assignedBy:      req.user ? req.user.fullName : 'Admin',
-        });
+    await querySheets('createAssessment', assessmentData);
 
-        // Real-time socket notification to the employee
-        if (global.io) {
-          global.io.to(`exam-${emp._id}`).emit(`notification:${emp._id}`, {
-            title: 'New Exam Assigned',
-            message: `You have been assigned: "${assessment.title}"`,
-            timestamp: new Date().toISOString()
-          });
-        }
-      }
+    // Explicitly invalidate cache first before socket emits to prevent client race conditions
+    clearCache();
+
+    if (global.io) {
+      console.log('📡 Broadcasting global sync signal for new assessment creation');
+      global.io.emit('db:sync');
     }
 
-    // Persist assessment itself to Google Sheets
-    persistEntity('createAssessment', {
-      _id:          assessment._id.toString(),
-      title:        assessment.title,
-      description:  assessment.description || '',
-      duration:     assessment.duration,
-      passingScore: assessment.passingScore,
-      category:     assessment.category || 'General',
-      status:       assessment.status,
-      maxViolations:assessment.maxViolations,
-      isRandomized: assessment.isRandomized,
-      questions:    JSON.stringify([]),
-      assignedTo:   JSON.stringify(employeeIds.map(String)),
-      createdBy:    req.user._id.toString(),
-    });
-
-    // Audit
-    await AuditLog.create({
-      user: req.user._id, action: 'assessment-created',
-      description: `Assessment created: "${assessment.title}" and assigned to ${employeeIds.length} employees`,
-      targetModel: 'Assessment', targetId: assessment._id,
-      metadata: { assignedCount: employeeIds.length, category: assessment.category },
-    });
-
-    res.status(201).json({ success: true, assessment });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    res.status(201).json({ success: true, assessment: assessmentData });
+  } catch (error) { 
+    console.error('CREATE ASSESSMENT ERROR:', error);
+    res.status(500).json({ success: false, message: error.message }); 
+  }
 };
 
-// PUT update assessment
 exports.updateAssessment = async (req, res) => {
   try {
-    const assessment = await Assessment.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
-
-    if (assessment.status === 'active' || assessment.status === 'scheduled') {
-      const employees = await Employee.find({ role: 'employee', isActive: true });
-      const employeeIds = employees.map(emp => emp._id);
-      assessment.assignedTo = employeeIds;
-      await assessment.save();
-      await Employee.updateMany(
-        { _id: { $in: employeeIds } },
-        { $addToSet: { assignedAssessments: assessment._id } }
-      );
-
-      for (const emp of employees) {
-        persistEntity('assignAssessment', {
-          employeeId:      emp.employeeId || emp._id.toString(),
-          employeeMongoId: emp._id.toString(),
-          assessmentId:    assessment._id.toString(),
-          examName:        assessment.title,
-          status:          'pending',
-          assignedBy:      req.user ? req.user.fullName : 'Admin',
-        });
-
-        // Real-time socket notification to the employee of an update
-        if (global.io) {
-          global.io.to(`exam-${emp._id}`).emit(`notification:${emp._id}`, {
-            title: 'Exam Updated',
-            message: `Exam "${assessment.title}" has been updated.`,
-            timestamp: new Date().toISOString()
-          });
-        }
-      }
+    const updateData = { ...req.body, _id: req.params.id };
+    const result = await querySheets('updateAssessment', updateData);
+    if (!result.success) {
+      return res.status(404).json({ success: false, message: result.message || 'Assessment not found' });
     }
-
-    // Persist updated assessment
-    persistEntity('updateAssessment', {
-      _id:          assessment._id.toString(),
-      title:        assessment.title,
-      description:  assessment.description || '',
-      duration:     assessment.duration,
-      passingScore: assessment.passingScore,
-      category:     assessment.category || 'General',
-      status:       assessment.status,
-      maxViolations:assessment.maxViolations,
-      questions:    assessment.questions || [],
-      assignedTo:   assessment.assignedTo || [],
-    });
-
-    await AuditLog.create({
-      user: req.user._id, action: 'assessment-updated',
-      description: `Assessment updated: "${assessment.title}"`,
-      targetModel: 'Assessment', targetId: assessment._id,
-    });
-
-    res.json({ success: true, assessment });
+    clearCache();
+    if (global.io) global.io.emit('db:sync');
+    res.json({ success: true, assessment: updateData });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
-// DELETE assessment
 exports.deleteAssessment = async (req, res) => {
-  const id = req.params.id;
   try {
-    const assessment = await Assessment.findByIdAndDelete(id);
-    
-    // Cascading deletes (non-critical)
-    try {
-      const questions = await Question.find({ assessment: id });
-      await Question.deleteMany({ assessment: id });
-      for (const q of questions) {
-        persistEntity('deleteEntity', { sheetName: 'questions', _id: q._id.toString() }).catch(() => {});
-      }
-    } catch (e) { console.warn('[deleteAssessment] questions cleanup failed:', e.message); }
-
-    try {
-      const results = await Result.find({ assessment: id });
-      await Result.deleteMany({ assessment: id });
-      for (const r of results) {
-        persistEntity('deleteEntity', { sheetName: 'results', _id: r._id.toString() }).catch(() => {});
-      }
-    } catch (e) { console.warn('[deleteAssessment] results cleanup failed:', e.message); }
-
-    try {
-      await Violation.deleteMany({ assessment: id });
-    } catch (e) { console.warn('[deleteAssessment] violations cleanup failed:', e.message); }
-
-    // Remove from in-memory DB
-    if (IN_MEMORY_DB && IN_MEMORY_DB.assessments) {
-      IN_MEMORY_DB.assessments = IN_MEMORY_DB.assessments.filter(a => a._id.toString() !== id);
-    }
-
-    if (assessment) {
-      persistEntity('deleteEntity', { sheetName: 'assessments', _id: id }).catch(() => {});
-      try {
-        await AuditLog.create({
-          user: req.user._id, action: 'assessment-deleted',
-          description: `Assessment deleted: "${assessment.title}"`,
-          targetModel: 'Assessment', targetId: id,
-        });
-      } catch (e) { console.warn('[deleteAssessment] audit log failed:', e.message); }
-    }
-
-    res.json({ success: true, message: 'Assessment and all related records deleted successfully' });
+    await querySheets('deleteEntity', { sheetName: 'assessments', _id: req.params.id });
+    clearCache();
+    if (global.io) global.io.emit('db:sync');
+    res.json({ success: true, message: 'Assessment deleted' });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
-// POST start exam (create result record)
-exports.startExam = async (req, res) => {
-  try {
-    const { assessmentId } = req.body;
-    
-    // Check if the employee has already completed/submitted/attempted this exam
-    const completedExisting = await Result.findOne({ 
-      employee: req.user._id, 
-      assessment: assessmentId, 
-      status: { $ne: 'in-progress' } 
-    });
-    if (completedExisting) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'You have already attempted this exam. Retakes are not allowed.' 
-      });
-    }
-
-    const existing = await Result.findOne({ employee: req.user._id, assessment: assessmentId, status: 'in-progress' });
-    if (existing) return res.json({ success: true, result: existing });
-
-    const assessment = await Assessment.findById(assessmentId).populate('questions');
-    if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
-
-    const startedAt = new Date();
-    const result = await Result.create({
-      employee: req.user._id,
-      assessment: assessmentId,
-      totalMarks: assessment.questions.reduce((sum, q) => sum + q.marks, 0),
-      startedAt,
-      screenMonitoring: {
-        webcamEnabled: true,
-        audioEnabled: true,
-        fullscreenEnforced: true,
-      },
-      deviceInfo: {
-        browser: req.headers['user-agent'] || '',
-        ip: req.ip || '',
-      },
-    });
-
-    // Persist exam start to Google Sheets
-    persistEntity('startExam', {
-      _id:             result._id.toString(),
-      employeeId:      req.user.employeeId || req.user._id.toString(),
-      employeeMongoId: req.user._id.toString(),
-      employeeName:    req.user.fullName || '',
-      employeeEmail:   req.user.email || '',
-      assessmentId:    assessmentId,
-      assessmentTitle: assessment.title,
-      startedAt:       startedAt.toISOString(),
-    });
-
-    try {
-      await AuditLog.create({
-        user: req.user._id, action: 'exam-started',
-        description: `Started exam: "${assessment.title}"`,
-        targetModel: 'Result', targetId: result._id,
-      });
-    } catch (e) { console.warn('[startExam] audit log failed:', e.message); }
-
-    res.status(201).json({ success: true, result });
-  } catch (err) {
-    console.error('[startExam] ERROR:', err.message, err.stack);
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// POST submit exam
-exports.submitExam = async (req, res) => {
-  try {
-    console.log("========== ASSESSMENTS/SUBMIT ==========");
-    console.log("BODY:", req.body);
-    
-    const { resultId, answers } = req.body;
-    const result = await Result.findById(resultId);
-    if (!result) return res.status(404).json({ success: false, message: 'Result not found' });
-
-    const assessment = await Assessment.findById(result.assessment).populate('questions');
-    if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
-
-    let totalScore = 0;
-
-    const processedAnswers = (answers || []).map(ans => {
-      const question = assessment.questions.find(q => q._id.toString() === ans.questionId);
-      if (!question) return ans;
-      let isCorrect = false;
-      let marksObtained = 0;
-      let correctAnswerText = '';
-      let selectedAnswerText = '';
-
-      const optionsText = question.options.map(o => o.text);
-      const notAnswered = !ans.selectedOptions || ans.selectedOptions.length === 0;
-      
-      if (question.type === 'mcq' || question.type === 'true-false') {
-        const correctIdx = question.options.findIndex(o => o.isCorrect);
-        isCorrect = !notAnswered && ans.selectedOptions?.[0] === correctIdx;
-        if (isCorrect) marksObtained = question.marks;
-        correctAnswerText = question.options[correctIdx]?.text || '';
-        selectedAnswerText = !notAnswered ? (question.options[ans.selectedOptions[0]]?.text || '') : 'Not Attempted';
-      } else if (question.type === 'multiple-select') {
-        const correctIdxs = question.options.map((o, i) => o.isCorrect ? i : null).filter(i => i !== null);
-        isCorrect = !notAnswered && JSON.stringify([...(ans.selectedOptions || [])].sort()) === JSON.stringify([...correctIdxs].sort());
-        if (isCorrect) marksObtained = question.marks;
-        correctAnswerText = correctIdxs.map(i => question.options[i]?.text).join(', ');
-        selectedAnswerText = !notAnswered ? ans.selectedOptions.map(i => question.options[i]?.text).join(', ') : 'Not Attempted';
-      }
-
-      totalScore += marksObtained;
-      return { 
-        question: ans.questionId, 
-        questionText: question.title,
-        options: optionsText,
-        selectedOptions: ans.selectedOptions, 
-        selectedAnswer: selectedAnswerText,
-        correctAnswer: correctAnswerText,
-        isCorrect, 
-        notAnswered,
-        marksObtained, 
-        timeTaken: ans.timeTaken || 0 
-      };
-    });
-
-    const correctAnswersCount = processedAnswers.filter(a => a.isCorrect).length;
-    const wrongAnswersCount = processedAnswers.length - correctAnswersCount;
-
-    // ── Safely coerce dates — in-memory DB stores them as ISO strings, not Date objects ──
-    const submittedAt = new Date();
-    const startedAt = result.startedAt ? new Date(result.startedAt) : submittedAt;
-    const completionTime = Math.round((submittedAt - startedAt) / 60000) || 0;
-    const totalMarks = result.totalMarks || 1; // prevent divide-by-zero
-
-    result.answers = processedAnswers;
-    result.totalScore = totalScore;
-    result.percentage = Math.round((totalScore / totalMarks) * 100);
-    result.passed = result.percentage >= (assessment.passingScore || 60);
-    result.status = req.body.autoSubmit ? 'auto-submitted' : 'submitted';
-    result.submittedAt = submittedAt;
-    result.completionTime = completionTime;
-    result.autoSubmitReason = req.body.terminationReason || (req.body.autoSubmit ? 'violations' : null);
-    result.correctAnswers = correctAnswersCount;
-    result.wrongAnswers = wrongAnswersCount;
-    await result.save();
-
-    const submissionType = req.body.autoSubmit ? 'Automatic' : 'Manual';
-
-    // Non-critical: Persist final result to Google Sheets + update employee stats
-    try {
-      const employee = await Employee.findById(result.employee);
-      persistEntity('submitResult', {
-        _id:             result._id.toString(),
-        employeeId:      employee ? (employee.employeeId || employee._id.toString()) : '',
-        employeeMongoId: result.employee.toString(),
-        employeeName:    employee ? employee.fullName : '',
-        employeeEmail:   employee ? employee.email : '',
-        assessmentId:    assessment._id.toString(),
-        assessmentTitle: assessment.title,
-        totalScore:      result.totalScore,
-        totalMarks:      result.totalMarks,
-        percentage:      result.percentage,
-        passed:          result.passed,
-        status:          result.status,
-        violationCount:  result.violationCount || 0,
-        completionTime:  completionTime,
-        startedAt:       startedAt.toISOString(),
-        submittedAt:     submittedAt.toISOString(),
-        autoSubmitReason:result.autoSubmitReason || '',
-        submissionType:  submissionType,
-        correctAnswers:  correctAnswersCount,
-        wrongAnswers:    wrongAnswersCount,
-        answers:         JSON.stringify(processedAnswers),
-      });
-
-      // Update employee exam stats
-      const allResults = await Result.find({
-        employee: result.employee,
-        status: { $in: ['submitted', 'auto-submitted'] },
-      });
-      const stats = {
-        totalAttempts: allResults.length,
-        totalPassed:   allResults.filter(r => r.passed).length,
-        totalFailed:   allResults.filter(r => !r.passed).length,
-        avgScore:      allResults.length ? Math.round(allResults.reduce((s, r) => s + r.percentage, 0) / allResults.length) : 0,
-        totalTimeTaken:allResults.reduce((s, r) => s + (r.completionTime || 0), 0),
-      };
-      await Employee.findByIdAndUpdate(result.employee, { examStats: stats });
-
-      if (employee) {
-        persistEntity('updateEmployee', {
-          _id:       result.employee.toString(),
-          examStats: JSON.stringify(stats),
-        });
-      }
-    } catch (e) {
-      console.warn('[submitExam] Non-critical: sheets/stats update failed —', e.message);
-    }
-
-    // Non-critical: Audit log
-    try {
-      const action = req.body.autoSubmit ? 'exam-auto-submitted' : 'exam-submitted';
-      await AuditLog.create({
-        user: result.employee, action,
-        description: `Exam "${assessment.title}" ${action}: Score ${result.percentage}% - ${result.passed ? 'PASSED' : 'FAILED'}`,
-        targetModel: 'Result', targetId: result._id,
-        metadata: { percentage: result.percentage, passed: result.passed, completionTime },
-      });
-    } catch (e) {
-      console.warn('[submitExam] Non-critical: audit log failed —', e.message);
-    }
-
-    res.json({ success: true, result });
-  } catch (err) {
-    console.error('[submitExam] ERROR:', err.message, err.stack);
-    res.status(500).json({ success: false, message: err.message, error: err.message, stack: err.stack });
-  }
-};
-
-// GET dashboard stats
-exports.getDashboardStats = async (req, res) => {
-  try {
-    const [totalEmployees, totalAssessments, completedExams, results] = await Promise.all([
-      Employee.countDocuments({ role: 'employee' }),
-      Assessment.countDocuments(),
-      Result.countDocuments({ status: { $in: ['submitted', 'auto-submitted'] } }),
-      Result.find({ status: { $in: ['submitted', 'auto-submitted'] } }),
-    ]);
-    const avgScore = results.length ? Math.round(results.reduce((s, r) => s + r.percentage, 0) / results.length) : 0;
-    res.json({ success: true, stats: { totalEmployees, totalAssessments, completedExams, avgScore } });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-};
-
-// POST bulk assign exam to employees (with Socket.IO notification)
 exports.bulkAssignExam = async (req, res) => {
   try {
     const { employeeIds } = req.body;
     const assessmentId = req.params.id;
-
-    if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
-      return res.status(400).json({ success: false, message: 'No employees provided' });
+    
+    const empRes = await querySheets('getEmployees');
+    const employees = empRes.data || [];
+    
+    const targetEmployees = employees.filter(e => employeeIds.includes(String(e._id)));
+    
+    for (const emp of targetEmployees) {
+      let assigned = [];
+      try { assigned = typeof emp.assignedAssessments === 'string' ? JSON.parse(emp.assignedAssessments) : (emp.assignedAssessments || []); } catch(e){}
+      
+      if (!assigned.includes(assessmentId)) {
+        assigned.push(assessmentId);
+        await querySheets('updateEmployee', { _id: emp._id, assignedAssessments: assigned });
+      }
     }
 
-    const assessment = await Assessment.findById(assessmentId);
-    if (!assessment) return res.status(404).json({ success: false, message: 'Assessment not found' });
-
-    let assignedCount = 0;
-    const assignedEmployees = [];
-    for (const empId of employeeIds) {
-      const emp = await Employee.findById(empId);
-      if (!emp) continue;
-
-      const alreadyAssigned = (emp.assignedAssessments || []).map(String).includes(String(assessmentId));
-      if (!alreadyAssigned) {
-        if (!emp.assignedAssessments) emp.assignedAssessments = [];
-        emp.assignedAssessments.push(assessmentId);
-        await emp.save();
+    const assRes = await querySheets('getAssessments');
+    const assessments = assRes.data || [];
+    const assessment = assessments.find(a => String(a._id) === String(assessmentId));
+    
+    if (assessment) {
+      let assTo = [];
+      try { assTo = typeof assessment.assignedTo === 'string' ? JSON.parse(assessment.assignedTo) : (assessment.assignedTo || []); } catch(e){}
+      
+      let changed = false;
+      for (const id of employeeIds) {
+        if (!assTo.includes(id)) {
+          assTo.push(id);
+          changed = true;
+        }
       }
-
-      const alreadyInList = (assessment.assignedTo || []).map(String).includes(String(empId));
-      if (!alreadyInList) {
-        if (!assessment.assignedTo) assessment.assignedTo = [];
-        assessment.assignedTo.push(empId);
+      if (changed) {
+        await querySheets('updateAssessment', { _id: assessmentId, assignedTo: assTo });
       }
-
-      assignedCount++;
-      assignedEmployees.push(emp);
     }
 
-    await assessment.save();
+    clearCache();
+    if (global.io) global.io.emit('db:sync');
+    res.json({ success: true, message: 'Assigned successfully' });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
 
-    await AuditLog.create({
-      user: req.user._id, action: 'exam-assigned',
-      description: `Admin assigned exam "${assessment.title}" to ${assignedCount} employee(s)`,
-      targetModel: 'Assessment', targetId: assessment._id,
-    });
+exports.getDashboardStats = async (req, res) => {
+  try {
+    const assRes = await querySheets('getAssessments');
+    const activeAssessments = (assRes.data || []).filter(a => a.status === 'active' || a.status === 'scheduled').length;
+    
+    const empRes = await querySheets('getEmployees');
+    const totalEmployees = (empRes.data || []).filter(e => e.role === 'employee').length;
 
-    // Socket.IO notifications
-    const io = req.app.get('io');
-    if (io) {
-      for (const emp of assignedEmployees) {
-        io.emit(`notification:${emp._id}`, {
-          type: 'exam-assigned',
-          title: 'New Exam Assigned!',
-          message: `"${assessment.title}" has been assigned to you. Duration: ${assessment.duration} min.`,
-          assessmentId: assessment._id,
-          timestamp: new Date(),
-        });
-      }
-      io.to('admin-room').emit('exam:bulk-assigned', {
-        assessmentId, assessmentTitle: assessment.title,
-        assignedCount, assignedBy: req.user.fullName,
-        timestamp: new Date(),
+    const resRes = await querySheets('getResults');
+    const totalExamsTaken = (resRes.data || []).filter(r => ['submitted', 'auto-submitted'].includes(r.status)).length;
+
+    const vRes = await querySheets('getViolations');
+    const violationsLogged = (vRes.data || []).length;
+
+    res.json({ success: true, stats: { activeAssessments, totalEmployees, totalExamsTaken, violationsLogged } });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.startExam = async (req, res) => {
+  try {
+    const { assessmentId } = req.body;
+
+    const resRes = await querySheets('getResults');
+    const allResults = resRes.data || [];
+    const alreadyAttempted = allResults.find(r => 
+      String(r.employee || r.employeeMongoId) === String(req.user._id) && 
+      String(r.assessmentId || r.assessment) === String(assessmentId)
+    );
+    if (alreadyAttempted) {
+      return res.status(400).json({
+        success: false,
+        message: "Exam already attempted or in-progress."
       });
     }
+    
+    const resultId = Date.now().toString();
+    const assRes = await querySheets('getAssessments');
+    const assessment = (assRes.data || []).find(a => String(a._id) === String(assessmentId));
 
-    // Persist each assignment to Google Sheets
-    for (const emp of assignedEmployees) {
-      persistEntity('assignAssessment', {
-        employeeId:      emp.employeeId || emp._id.toString(),
-        employeeMongoId: emp._id.toString(),
-        assessmentId:    assessment._id.toString(),
-        examName:        assessment.title,
-        status:          'pending',
-        assignedBy:      req.user.fullName || 'Admin',
-      });
+    const empRes = await querySheets('getEmployees');
+    const employee = (empRes.data || []).find(e => String(e._id) === String(req.user._id));
+    
+    const newResult = {
+      _id: resultId,
+      employee: req.user._id.toString(),
+      assessment: assessmentId,
+      employeeId: employee ? (employee.employeeId || employee._id.toString()) : '',
+      employeeMongoId: req.user._id.toString(),
+      employeeName: employee ? employee.fullName : '',
+      employeeEmail: employee ? employee.email : '',
+      assessmentId: assessmentId,
+      assessmentTitle: assessment ? assessment.title : 'Exam',
+      status: 'in-progress',
+      startedAt: new Date().toISOString(),
+      examStarted: true,
+      examCompleted: false,
+      startTime: new Date().toISOString(),
+      violationCount: 0,
+      screenMonitoring: JSON.stringify({ webcamEnabled: true })
+    };
+
+    await querySheets('submitResult', newResult);
+    
+    // Clear the cache so /assessments/my updates immediately to "in-progress"
+    if (req.user && req.user._id) {
+      const { clearUserCache } = require('../middleware/cache');
+      clearUserCache(req.user._id);
     }
 
-    res.json({ success: true, message: `Exam assigned to ${assignedCount} employee(s)`, assignedCount });
-  } catch (err) {
-    console.error('BULK ASSIGN ERROR:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
+    res.status(201).json({ success: true, result: newResult });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.submitExam = async (req, res) => {
+  // Currently handled in index.js at /api/submit-exam. 
+  // We can just redirect or implement it here if the route hits it.
+  res.status(501).json({ success: false, message: 'Use /api/submit-exam route directly' });
 };

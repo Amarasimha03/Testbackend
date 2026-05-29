@@ -3,8 +3,10 @@ const router = express.Router();
 const { protect, adminOnly } = require('../middleware/auth');
 const { getQuestions, createQuestion, bulkCreateQuestions, updateQuestion, deleteQuestion, generateQuestionsFromFile } = require('../controllers/questionController');
 
+const { apiCacheMiddleware } = require('../middleware/cache');
+
 router.use(protect, adminOnly);
-router.get('/', getQuestions);
+router.get('/', apiCacheMiddleware(), getQuestions);
 router.post('/', createQuestion);
 router.post('/bulk', bulkCreateQuestions);
 router.post('/generate', generateQuestionsFromFile);

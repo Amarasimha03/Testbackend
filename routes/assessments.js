@@ -10,7 +10,7 @@ const { apiCacheMiddleware } = require('../middleware/cache');
 
 router.use(protect);
 router.get('/stats', adminOnly, apiCacheMiddleware(), getDashboardStats);
-router.get('/my', apiCacheMiddleware(), getMyAssessments);
+router.get('/my', apiCacheMiddleware(15000), getMyAssessments);
 router.get('/', adminOnly, apiCacheMiddleware(), getAssessments);
 router.post('/', adminOnly, createAssessment);
 router.get('/:id', apiCacheMiddleware(), getAssessment);

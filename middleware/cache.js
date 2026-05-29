@@ -1,31 +1,45 @@
-const { getCachedResponse, setCachedResponse } = require('../utils/localCache');
+const cache = new Map();
 
-/**
- * Express middleware for high-performance GET request caching.
- * Automatically cached scoped by URL, query params, and authenticated user ID.
- */
-exports.apiCacheMiddleware = (duration = 30000) => {
+const apiCacheMiddleware = (duration = 30000) => {
   return (req, res, next) => {
-    // Only cache GET requests
     if (req.method !== 'GET') return next();
 
-    // Scoped key ensures user sessions are isolated (no cross-profile leakage)
     const key = `${req.originalUrl || req.url}__${req.user?._id || 'anon'}`;
-    const cached = getCachedResponse(key);
-    
-    if (cached) {
-      // Serve response instantly
-      return res.json(cached);
+    const cached = cache.get(key);
+
+    if (cached && Date.now() - cached.time < duration) {
+      return res.json(cached.body);
     }
-    
-    // Intercept res.json to capture response
+
     const originalJson = res.json;
     res.json = function (body) {
       if (res.statusCode >= 200 && res.statusCode < 300 && body && body.success !== false) {
-        setCachedResponse(key, body);
+        cache.set(key, { body, time: Date.now() });
       }
       return originalJson.call(this, body);
     };
     next();
   };
+};
+
+const clearCache = () => {
+  console.log('[Cache] Clearing all apiCacheMiddleware entries.');
+  cache.clear();
+};
+
+const clearUserCache = (userId) => {
+  if (!userId) return;
+  const suffix = `__${userId}`;
+  console.log(`[Cache] Clearing apiCacheMiddleware entries for user: ${userId}`);
+  for (const key of cache.keys()) {
+    if (key.endsWith(suffix)) {
+      cache.delete(key);
+    }
+  }
+};
+
+module.exports = {
+  apiCacheMiddleware,
+  clearCache,
+  clearUserCache
 };

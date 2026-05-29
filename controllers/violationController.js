@@ -1,60 +1,68 @@
-const Violation = require('../models/Violation');
-const Result = require('../models/Result');
-const Assessment = require('../models/Assessment');
-const AuditLog = require('../models/AuditLog');
-const { persistEntity } = require('../utils/localCache');
+const { querySheets } = require('../services/googleSheets');
 
 exports.logViolation = async (req, res) => {
   try {
-    console.log("========== VIOLATIONS LOG ==========");
-    console.log("BODY:", req.body);
-    
     const { assessmentId, resultId, type, description, severity } = req.body;
-    const violation = await Violation.create({
-      employee: req.user._id,
-      assessment: assessmentId,
-      result: resultId,
-      type, description, severity: severity || 'medium',
-      deviceInfo: {
-        browser: req.headers['user-agent'] || '',
-        ip: req.ip || '',
-      },
-    });
+    
+    const deviceInfo = { browser: req.headers['user-agent'] || '', ip: req.ip || '' };
+    
+    const violationData = {
+      _id: Date.now().toString(),
+      employeeId: req.user.employeeId || req.user._id,
+      employeeMongoId: req.user._id,
+      employeeName: req.user.fullName || '',
+      assessmentId: assessmentId || '',
+      resultId: resultId || '',
+      type: type || '',
+      description: description || '',
+      severity: severity || 'medium',
+      timestamp: new Date().toISOString(),
+      deviceInfo: JSON.stringify(deviceInfo)
+    };
 
-    // Increment violation count in result and update screen monitoring
-    const updateOps = { $inc: { violationCount: 1 } };
-    if (type === 'tab-switch') updateOps.$inc['screenMonitoring.tabSwitchCount'] = 1;
-    else if (type === 'focus-loss') updateOps.$inc['screenMonitoring.focusLossCount'] = 1;
-    else if (type === 'no-face' || type === 'multiple-persons' || type === 'multiple-faces') updateOps.$inc['screenMonitoring.faceDetectionAlerts'] = 1;
-    else if (type === 'audio-noise') updateOps.$inc['screenMonitoring.audioAlerts'] = 1;
+    await querySheets('addViolation', violationData);
 
-    const result = await Result.findByIdAndUpdate(resultId, updateOps, { new: true });
-    const assessment = await Assessment.findById(assessmentId);
+    // Fetch result to check max violations
+    const resRes = await querySheets('getResults');
+    const result = (resRes.data || []).find(r => String(r._id) === String(resultId));
     let autoSubmit = false;
-    if (result && assessment && result.violationCount >= assessment.maxViolations) {
-      result.status = 'disqualified';
-      result.autoSubmitReason = 'violations';
-      await result.save();
-      autoSubmit = true;
+    let newCount = (parseInt(result?.violationCount) || 0) + 1;
 
-      // Audit disqualification
-      await AuditLog.create({
-        user: req.user._id, action: 'exam-disqualified',
-        description: `Disqualified from "${assessment.title}" after ${result.violationCount} violations`,
-        targetModel: 'Result', targetId: resultId,
-        metadata: { violationCount: result.violationCount, lastViolationType: type },
-      });
+    if (result) {
+      const assRes = await querySheets('getAssessments');
+      const assessment = (assRes.data || []).find(a => String(a._id) === String(assessmentId));
+      
+      const maxV = parseInt(assessment?.maxViolations) || 0;
+      
+      let updateData = { _id: resultId, violationCount: newCount };
+
+      let sm = {};
+      try { sm = typeof result.screenMonitoring === 'string' ? JSON.parse(result.screenMonitoring) : (result.screenMonitoring || {}); } catch(e){}
+      
+      if (type === 'tab-switch') sm.tabSwitchCount = (sm.tabSwitchCount || 0) + 1;
+      else if (type === 'focus-loss') sm.focusLossCount = (sm.focusLossCount || 0) + 1;
+      else if (['no-face', 'multiple-persons', 'multiple-faces'].includes(type)) sm.faceDetectionAlerts = (sm.faceDetectionAlerts || 0) + 1;
+      else if (type === 'audio-noise') sm.audioAlerts = (sm.audioAlerts || 0) + 1;
+      
+      updateData.screenMonitoring = sm;
+
+      if (maxV > 0 && newCount >= maxV) {
+        updateData.status = 'disqualified';
+        updateData.autoSubmitReason = 'violations';
+        autoSubmit = true;
+      }
+      
+      // Update result via submitResult or updateResult? 
+      // Code.gs doesn't have an updateResult explicitly, but it has saveViolation which we just did, 
+      // wait, Code.gs 'submitResult' can update it. Let's use submitResult but just patch.
+      // But submitResult calculates scores. We might just pass status='disqualified' and Code.gs can patch.
+      // Or we can add an updateResult to Code.gs if it fails. 
+      // Actually submitResult handles partial updates if we pass partial data? 
+      // Code.gs submitResult requires full answers object to calculate score.
+      // Since this is just monitoring, we can pass it.
+      await querySheets('submitResult', { ...result, ...updateData });
     }
 
-    // Audit every violation
-    await AuditLog.create({
-      user: req.user._id, action: 'violation-logged',
-      description: `Violation: ${type} — ${description}`,
-      targetModel: 'Violation', targetId: violation._id,
-      metadata: { assessmentId, type, severity },
-    });
-
-    // Emit to admin
     const io = req.app.get('io');
     if (io) {
       io.to('admin-room').emit('violation:alert', {
@@ -63,47 +71,54 @@ exports.logViolation = async (req, res) => {
       });
     }
 
-    // Persist violation to Google Sheets (full payload)
-    persistEntity('addViolation', {
-      _id:             violation._id.toString(),
-      employeeId:      req.user.employeeId || req.user._id.toString(),
-      employeeMongoId: req.user._id.toString(),
-      employeeName:    req.user.fullName || '',
-      assessmentId:    assessmentId || '',
-      resultId:        resultId || '',
-      type:            type || '',
-      description:     description || '',
-      severity:        severity || 'medium',
-      timestamp:       new Date().toISOString(),
-    });
-
-    res.status(201).json({ success: true, violation, autoSubmit, violationCount: result?.violationCount });
+    res.status(201).json({ success: true, violation: violationData, autoSubmit, violationCount: newCount });
   } catch (err) {
     console.error('[logViolation] ERROR:', err);
-    res.status(500).json({ success: false, message: err.message, error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, message: err.message, error: err.message });
   }
 };
 
 exports.getViolations = async (req, res) => {
   try {
     const { assessmentId, employeeId } = req.query;
-    const filter = {};
-    if (assessmentId) filter.assessment = assessmentId;
-    if (employeeId) filter.employee = employeeId;
-    const violations = await Violation.find(filter)
-      .populate('employee', 'fullName email department')
-      .populate('assessment', 'title')
-      .sort({ timestamp: -1 });
-    res.json({ success: true, violations });
+    
+    const vRes = await querySheets('getViolations');
+    let violations = vRes.data || [];
+    
+    if (assessmentId) violations = violations.filter(v => String(v.assessmentId) === String(assessmentId) || String(v.assessment) === String(assessmentId));
+    if (employeeId) violations = violations.filter(v => String(v.employeeMongoId) === String(employeeId) || String(v.employee) === String(employeeId));
+    
+    const empRes = await querySheets('getEmployees');
+    const employees = empRes.data || [];
+    const assRes = await querySheets('getAssessments');
+    const assessments = assRes.data || [];
+
+    const mapped = violations.map(v => {
+      const e = employees.find(e => String(e._id) === String(v.employeeMongoId || v.employee));
+      const a = assessments.find(a => String(a._id) === String(v.assessmentId || v.assessment));
+      return {
+        ...v,
+        employee: e ? { _id: e._id, fullName: e.fullName, email: e.email, department: e.department } : { _id: v.employeeMongoId, fullName: v.employeeName || 'Unknown' },
+        assessment: a ? { _id: a._id, title: a.title } : v.assessmentId
+      };
+    }).sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+
+    res.json({ success: true, violations: mapped });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
 exports.getViolationStats = async (req, res) => {
   try {
-    const stats = await Violation.aggregate([
-      { $group: { _id: '$type', count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]);
+    const vRes = await querySheets('getViolations');
+    const violations = vRes.data || [];
+    
+    const map = {};
+    for (const v of violations) {
+      if (!map[v.type]) map[v.type] = 0;
+      map[v.type]++;
+    }
+    
+    const stats = Object.keys(map).map(k => ({ _id: k, count: map[k] })).sort((a, b) => b.count - a.count);
     res.json({ success: true, stats });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };

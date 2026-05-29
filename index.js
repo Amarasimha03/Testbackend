@@ -10,7 +10,7 @@ process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED REJECTION:", err);
 });
 
-const GOOGLE_SHEET_URL_DEFAULT = 'https://script.google.com/macros/s/AKfycbzhAH4jIu3GopFZ0jMzPSpi-W7tmYIMwDYuc4KFg0Fl7dpjgnFfRgVM5Jnp1Z_-L_l3-A/exec';
+const GOOGLE_SHEET_URL_DEFAULT = 'https://script.google.com/macros/s/AKfycbxUVUnaXv_aOcxT9m__tsqAlpMaLKtwmvVXhfUiRgoJ7hFGv3EFVWFF3r7dPRYZJuJa-A/exec';
 process.env.JWT_SECRET        = process.env.JWT_SECRET        || 'onlinetest_jwt_secret_2024_secure_key';
 process.env.JWT_EXPIRES_IN    = process.env.JWT_EXPIRES_IN    || '7d';
 process.env.ADMIN_EMAIL       = process.env.ADMIN_EMAIL       || 'admin@gmail.com';
@@ -20,10 +20,11 @@ process.env.GOOGLE_SHEET_URL  = process.env.GOOGLE_SHEET_URL  || GOOGLE_SHEET_UR
 
 const express = require('express');
 const cors = require('cors');
-const localCache = require('./utils/localCache');
+// localCache removed
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const clientBuildPath = path.join(__dirname, 'build');
+
 
 // ── Startup diagnostics ─────────────────────────────────────
 console.log('🔍 ENV CHECK:');
@@ -54,7 +55,8 @@ app.use(compression());
 
 app.use(cors({
   origin: [
-      process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com"
+      process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com",
+      "http://localhost:3001"
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE"]
@@ -69,27 +71,21 @@ const limiter = rateLimit({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/api', limiter);
+
+// Clear API cache on mutations (POST, PUT, DELETE) to prevent stale cached reads on client
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+    const { clearCache } = require('./middleware/cache');
+    clearCache();
+  }
+  next();
+});
+
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Initialize DB from Google Sheets BEFORE accepting any requests
+// Server startup logic
 async function startServer() {
-  try {
-    await localCache.connect();
-    const { readDB } = require('./utils/localCache');
-    const db = readDB();
-    console.log(`✅ Google Sheets DB loaded — employees: ${db.employees?.length||0}, questions: ${db.questions?.length||0}, assessments: ${db.assessments?.length||0}, results: ${db.results?.length||0}, violations: ${db.violations?.length||0}, auditlogs: ${db.auditLogs?.length||0}`);
-  } catch (err) {
-    console.error('❌ DB connect failed, using seed-only state:', err.message);
-  }
-
-  // Auto sync Google Sheets every 10 seconds
-  setInterval(async () => {
-    try {
-      await localCache.connect(true);
-    } catch (err) {
-      console.error('❌ Auto sync failed:', err.message);
-    }
-  }, 10000);
+  console.log('✅ Node server starting in proxy mode (bypassing local DB cache)');
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -108,82 +104,93 @@ app.use('/api/sheets', sheetsWebhookRoutes);
 
 const { protect, adminOnly } = require('./middleware/auth');
 
-// ── Force-reload data from Google Sheets (admin only) ────────────
-app.post('/api/sync-db', protect, adminOnly, async (req, res) => {
+// ── DB Status (admin only) ────────────────────────────────────
+app.get('/api/db-status', protect, adminOnly, async (req, res) => {
   try {
-    await localCache.connect(true);
-    const { readDB, writeDB } = require('./utils/localCache');
-    const db = readDB();
-
-    // Dedup employees by email — sheet entry wins over seed when emails match
-    // This fixes the 5-vs-4 employee count when admin appears in both seed and sheet
-    const seen = new Map();
-    db.employees.forEach(e => {
-      const key = (e.email || '').toLowerCase().trim();
-      if (key) seen.set(key, e); // later entry (sheet) overwrites earlier (seed)
-    });
-    db.employees = Array.from(seen.values());
-    writeDB(db);
-
+    const { querySheets } = require('./services/googleSheets');
+    const dbRes = await querySheets('getDatabase');
+    const db = dbRes.data || {};
     res.json({
       success: true,
-      message: 'Database reloaded from Google Sheets (deduped)',
+      sheetsUrl: process.env.GOOGLE_SHEET_URL ? '✅ configured' : '❌ missing',
       counts: {
         employees:   db.employees?.length   || 0,
         assessments: db.assessments?.length || 0,
         questions:   db.questions?.length   || 0,
         results:     db.results?.length     || 0,
         violations:  db.violations?.length  || 0,
-      }
+      },
+      adminEmail: process.env.ADMIN_EMAIL,
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ── DB Status (admin only) ────────────────────────────────────
-app.get('/api/db-status', protect, adminOnly, (req, res) => {
-  const { readDB } = require('./utils/localCache');
-  const db = readDB();
-  res.json({
-    success: true,
-    sheetsUrl: process.env.GOOGLE_SHEET_URL ? '✅ configured' : '❌ missing',
-    counts: {
-      employees:   db.employees?.length   || 0,
-      assessments: db.assessments?.length || 0,
-      questions:   db.questions?.length   || 0,
-      results:     db.results?.length     || 0,
-      violations:  db.violations?.length  || 0,
-    },
-    adminEmail: process.env.ADMIN_EMAIL,
-  });
-});
 
-
-app.post('/api/submit-exam', protect, async (req, res) => {
+const submitExamHandler = async (req, res) => {
   try {
     console.log("========== SUBMIT EXAM ==========");
     console.log("BODY:", req.body);
     
-    const { employeeId, reason, resultId } = req.body;
-    const Result = require('./models/Result');
-    const Employee = require('./models/Employee');
-    const Assessment = require('./models/Assessment');
-    const AuditLog = require('./models/AuditLog');
-    const { persistEntity, IN_MEMORY_DB } = require('./utils/localCache');
+    const { employeeId, reason, resultId, autoSubmit } = req.body;
+    const { querySheets } = require('./services/googleSheets');
+    
+    const resRes = await querySheets('getResults');
+    const results = resRes.data || [];
 
     let result;
     if (resultId) {
-      result = await Result.findById(resultId);
+      result = results.find(r => String(r._id) === String(resultId));
     } else {
-      result = await Result.findOne({ employee: employeeId || req.user._id, status: 'in-progress' });
+      result = results.find(r => (String(r.employeeMongoId) === String(employeeId || req.user._id) || String(r.employeeId) === String(employeeId || req.user._id)) && r.status === 'in-progress');
     }
 
     if (!result) {
       return res.status(404).json({ success: false, message: 'Active exam result not found' });
     }
 
-    const assessment = await Assessment.findById(result.assessment).populate('questions');
+    const assRes = await querySheets('getAssessments');
+    const assessment = (assRes.data || []).find(a => String(a._id || a.id) === String(result.assessmentId || result.assessment));
+    
+    let questions = [];
+    if (assessment) {
+      const assessmentId = assessment._id || assessment.id;
+      const qRes = await querySheets('getQuestions', { assessmentId });
+      const rawQuestions = (qRes.data || []).filter(q => String(q.assessment) === String(assessmentId) || String(q.assessmentId) === String(assessmentId));
+      questions = rawQuestions.map(q => {
+        if (typeof q.options === 'string') {
+          try { q.options = JSON.parse(q.options); } catch(e) {}
+        }
+        if (Array.isArray(q.options) && q.options.length > 0 && typeof q.options[0] !== 'object') {
+          const correctIdx = parseInt(q.correctOptionIndex !== undefined ? q.correctOptionIndex : 0, 10);
+          q.options = q.options.map((opt, idx) => ({ text: String(opt), isCorrect: idx === correctIdx }));
+        }
+        if (!Array.isArray(q.options) || q.options.length === 0) {
+          const opts = [];
+          const correctIdx = parseInt(q.correctOptionIndex !== undefined ? q.correctOptionIndex : -1, 10);
+          if (q.option1 !== undefined && q.option1 !== '') opts.push({ text: q.option1, isCorrect: correctIdx === 0 });
+          if (q.option2 !== undefined && q.option2 !== '') opts.push({ text: q.option2, isCorrect: correctIdx === 1 });
+          if (q.option3 !== undefined && q.option3 !== '') opts.push({ text: q.option3, isCorrect: correctIdx === 2 });
+          if (q.option4 !== undefined && q.option4 !== '') opts.push({ text: q.option4, isCorrect: correctIdx === 3 });
+          q.options = opts;
+        }
+        if (Array.isArray(q.options)) {
+          q.options = q.options.map((o, idx) => {
+            if (typeof o === 'object' && o !== null) {
+              return { text: o.text || '', isCorrect: !!o.isCorrect };
+            }
+            return { text: String(o), isCorrect: idx === 0 };
+          });
+        }
+        q.title = q.title || q.question || '';
+        return q;
+      });
+    }
+
+    const totalMarks = questions.reduce((sum, q) => sum + (parseInt(q.marks) || 0), 0);
+    result.totalMarks = totalMarks;
+
     let totalScore = 0;
     let correctAnswersCount = 0;
     let wrongAnswersCount = 0;
@@ -191,27 +198,40 @@ app.post('/api/submit-exam', protect, async (req, res) => {
 
     if (req.body.answers && Array.isArray(req.body.answers)) {
       processedAnswers = req.body.answers.map(ans => {
-        const question = assessment.questions.find(q => q._id.toString() === ans.questionId);
+        const question = questions.find(q => String(q._id || q.id) === String(ans.questionId));
         if (!question) return ans;
         let isCorrect = false;
         let marksObtained = 0;
         let correctAnswerText = '';
         let selectedAnswerText = '';
 
-        const optionsText = question.options.map(o => o.text);
+        let qOptions = question.options || [];
+
+        const optionsText = qOptions.map(o => o.text);
         
-        if (question.type === 'mcq' || question.type === 'true-false') {
-          const correctIdx = question.options.findIndex(o => o.isCorrect);
-          isCorrect = ans.selectedOptions?.[0] === correctIdx;
-          if (isCorrect) marksObtained = question.marks;
-          correctAnswerText = question.options[correctIdx]?.text || '';
-          selectedAnswerText = (ans.selectedOptions && ans.selectedOptions.length > 0) ? question.options[ans.selectedOptions[0]]?.text : 'Not Attempted';
+        const qType = question.type || 'mcq';
+        let selectedIdx = undefined;
+        let selectedIdxs = [];
+        if (ans.selectedAnswer !== undefined) {
+          selectedIdx = Array.isArray(ans.selectedAnswer) ? ans.selectedAnswer[0] : ans.selectedAnswer;
+          selectedIdxs = Array.isArray(ans.selectedAnswer) ? ans.selectedAnswer : [ans.selectedAnswer];
+        } else if (ans.selectedOptions !== undefined) {
+          selectedIdx = ans.selectedOptions[0];
+          selectedIdxs = ans.selectedOptions;
+        }
+
+        if (qType === 'mcq' || qType === 'true-false' || qType === 'multiple-choice') {
+          const correctIdx = qOptions.findIndex(o => o.isCorrect === true || o.isCorrect === 'true');
+          isCorrect = selectedIdx != null && String(selectedIdx) === String(correctIdx);
+          if (isCorrect) marksObtained = parseInt(question.marks) || 0;
+          correctAnswerText = qOptions[correctIdx]?.text || '';
+          selectedAnswerText = (selectedIdx !== undefined && selectedIdx !== null) ? (qOptions[selectedIdx]?.text || 'Not Attempted') : 'Not Attempted';
         } else if (question.type === 'multiple-select') {
-          const correctIdxs = question.options.map((o, i) => o.isCorrect ? i : null).filter(i => i !== null);
-          isCorrect = JSON.stringify(ans.selectedOptions?.sort()) === JSON.stringify(correctIdxs.sort());
-          if (isCorrect) marksObtained = question.marks;
-          correctAnswerText = correctIdxs.map(i => question.options[i]?.text).join(', ');
-          selectedAnswerText = (ans.selectedOptions && ans.selectedOptions.length > 0) ? ans.selectedOptions.map(i => question.options[i]?.text).join(', ') : 'Not Attempted';
+          const correctIdxs = qOptions.map((o, i) => (o.isCorrect === true || o.isCorrect === 'true') ? i : null).filter(i => i !== null);
+          isCorrect = JSON.stringify(selectedIdxs.map(Number).sort()) === JSON.stringify(correctIdxs.map(Number).sort());
+          if (isCorrect) marksObtained = parseInt(question.marks) || 0;
+          correctAnswerText = correctIdxs.map(i => qOptions[i]?.text).join(', ');
+          selectedAnswerText = (selectedIdxs && selectedIdxs.length > 0) ? selectedIdxs.map(i => qOptions[i]?.text).filter(Boolean).join(', ') : 'Not Attempted';
         }
 
         totalScore += marksObtained;
@@ -219,7 +239,7 @@ app.post('/api/submit-exam', protect, async (req, res) => {
           question: ans.questionId, 
           questionText: question.title,
           options: optionsText,
-          selectedOptions: ans.selectedOptions, 
+          selectedOptions: selectedIdxs, 
           selectedAnswer: selectedAnswerText,
           correctAnswer: correctAnswerText,
           isCorrect, 
@@ -238,33 +258,34 @@ app.post('/api/submit-exam', protect, async (req, res) => {
       result.correctAnswers = correctAnswersCount;
       result.wrongAnswers = wrongAnswersCount;
     } else {
-      correctAnswersCount = result.answers ? result.answers.filter(a => a.isCorrect).length : 0;
-      wrongAnswersCount = result.answers ? (result.answers.length - correctAnswersCount) : 0;
+      let rAnswers = [];
+      try { rAnswers = typeof result.answers === 'string' ? JSON.parse(result.answers) : (result.answers || []); } catch(e){}
+      correctAnswersCount = rAnswers.filter(a => a.isCorrect === true || a.isCorrect === 'true').length;
+      wrongAnswersCount = rAnswers.length - correctAnswersCount;
     }
 
-    // Determine if this is a user-initiated cancellation
     const isUserCancelled = reason && reason.toLowerCase().includes('user cancelled');
     
-    result.status = isUserCancelled ? 'cancelled' : 'auto-submitted';
-    result.submittedAt = new Date();
-    result.completionTime = Math.round((result.submittedAt - result.startedAt) / 60000);
-    result.autoSubmitReason = reason || 'Camera Violations';
-    await result.save();
+    result.status = isUserCancelled ? 'cancelled' : 'completed';
+    result.submittedAt = new Date().toISOString();
+    result.examCompleted = true;
+    result.endTime = new Date().toISOString();
+    result.completionTime = Math.round((new Date(result.submittedAt) - new Date(result.startedAt || 0)) / 60000);
+    result.autoSubmitReason = reason || (autoSubmit ? 'Camera Violations' : 'Manual Submission');
 
-    // Update in-memory DB
-    const resIdx = IN_MEMORY_DB.results.findIndex(r => r._id.toString() === result._id.toString());
-    if (resIdx !== -1) IN_MEMORY_DB.results[resIdx] = result.toObject();
+    const empRes = await querySheets('getEmployees');
+    const empId = result.employeeMongoId || result.employeeId || req.user._id;
+    const employee = (empRes.data || []).find(e => String(e._id) === String(empId));
 
-    const employee = await Employee.findById(result.employee);
-
-    // Persist final result to Google Sheets
-    persistEntity('submitResult', {
-      _id:             result._id.toString(),
+    await querySheets('submitResult', {
+      _id:             result._id,
       employeeId:      employee ? (employee.employeeId || employee._id.toString()) : '',
-      employeeMongoId: result.employee.toString(),
+      employeeMongoId: empId.toString(),
+      employee:        empId.toString(),
       employeeName:    employee ? employee.fullName : '',
       employeeEmail:   employee ? employee.email : '',
-      assessmentId:    result.assessment.toString(),
+      assessmentId:    (result.assessmentId || result.assessment || assessment?._id || '').toString(),
+      assessment:      (result.assessmentId || result.assessment || assessment?._id || '').toString(),
       assessmentTitle: assessment ? assessment.title : 'Exam',
       totalScore:      result.totalScore,
       totalMarks:      result.totalMarks,
@@ -273,54 +294,52 @@ app.post('/api/submit-exam', protect, async (req, res) => {
       status:          result.status,
       violationCount:  result.violationCount || 0,
       completionTime:  result.completionTime || 0,
-      startedAt:       result.startedAt ? result.startedAt.toISOString() : '',
-      submittedAt:     result.submittedAt ? result.submittedAt.toISOString() : '',
+      startedAt:       result.startedAt || '',
+      submittedAt:     result.submittedAt || '',
+      examStarted:     true,
+      examCompleted:   true,
+      startTime:       result.startTime || result.startedAt || '',
+      endTime:         result.endTime || result.submittedAt || '',
       cancelTime:      isUserCancelled ? new Date().toISOString() : '',
       autoSubmitReason:result.autoSubmitReason || '',
-      submissionType:  isUserCancelled ? 'User Cancelled' : 'Automatic',
+      submissionType:  isUserCancelled ? 'User Cancelled' : 'Submitted',
       correctAnswers:  correctAnswersCount,
       wrongAnswers:    wrongAnswersCount,
       answers:         JSON.stringify(result.answers || []),
     });
 
-    // Save violation specifically to Google Sheets using saveViolation
-    persistEntity('saveViolation', {
+    await querySheets('saveViolation', {
       employeeId:      employee ? (employee.employeeId || employee._id.toString()) : '',
       name:            employee ? employee.fullName : '',
       warningCount:    result.violationCount || (isUserCancelled ? 0 : 4),
       reason:          reason || 'Camera Violations',
     });
 
-    // Notify admin
     const io = req.app.get('io');
     if (io) {
       io.to('admin-room').emit('exam:completed', {
-        employeeId: result.employee.toString(),
-        assessmentId: result.assessment.toString(),
+        employeeId: empId.toString(),
+        assessmentId: (result.assessment || assessment?._id || '').toString(),
         terminationReason: reason || 'Camera Violations',
         status: result.status,
       });
     }
 
-    const auditAction = isUserCancelled ? 'exam-cancelled' : 'exam-auto-submitted';
-    const auditDesc = isUserCancelled
-      ? `Exam cancelled by user. Reason: ${reason}`
-      : `Exam auto-submitted due to: ${reason || 'Camera Violations'}`;
-
-    await AuditLog.create({
-      user: result.employee,
-      action: auditAction,
-      description: auditDesc,
-      targetModel: 'Result',
-      targetId: result._id,
-    });
+    // Clear cache so the dashboard reflects the completed exam immediately
+    if (req.user && req.user._id) {
+      const { clearUserCache } = require('./middleware/cache');
+      clearUserCache(req.user._id);
+    }
 
     res.json({ success: true, message: isUserCancelled ? 'Exam cancelled successfully' : 'Exam auto-submitted successfully' });
   } catch (err) {
     console.error('[/api/submit-exam] ERROR:', err);
-    res.status(500).json({ success: false, message: err.message, error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, message: err.message, error: err.message });
   }
-});
+};
+
+app.post('/api/submit-exam', protect, submitExamHandler);
+app.post('/api/results/submit', protect, submitExamHandler);
 
 
 app.get('/api/health', (req, res) =>
@@ -364,9 +383,11 @@ const server = http.createServer(app);
 
 // Initialize Socket.IO
 const io = new Server(server, {
+  transports: ["websocket", "polling"],
   cors: {
       origin: [
-          process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com"
+          process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com",
+          "http://localhost:3001"
       ],
       methods: ["GET", "POST"],
       credentials: true
@@ -394,13 +415,56 @@ io.on('connection', (socket) => {
     socket.join(`exam-${data.employeeId}`);
   });
 
-  // Employee joins exam and notifies admin
+  // Employee joins exam via official user prompt spec
+  socket.on('join-exam', (data) => {
+    const { examId, userId, employeeName } = data;
+    socket.join(examId);
+    activeSockets.set(String(userId), { socketId: socket.id, examId });
+    
+    // Notify admin using default fallback and spec room
+    io.to('admin-room').emit('exam:employee-joined', {
+      employeeId: userId,
+      employeeName: employeeName || 'Employee',
+      examId,
+      socketId: socket.id,
+      joinedAt: new Date()
+    });
+  });
+
+  // Employee camera stream specification
+  socket.on('camera-stream', (data) => {
+    const { examId } = data;
+    io.to(examId).emit('camera-stream', data);
+    // Maintain admin console live frame update compatibility
+    io.to('admin-room').emit('exam:frame-update', data);
+  });
+
+  // Employee screen share stream specification
+  socket.on('screen-share', (data) => {
+    const { examId } = data;
+    io.to(examId).emit('screen-share', data);
+    io.to('admin-room').emit('admin-live-frame', data);
+  });
+
+  // Employee violation specification
+  socket.on('violation', (data) => {
+    const { examId } = data;
+    io.to(examId).emit('violation', data);
+    io.to('admin-room').emit('violation:alert', data);
+  });
+
+  // Employee exam submit specification
+  socket.on('submit-exam', (data) => {
+    const { examId } = data;
+    io.to(examId).emit('exam-submitted', data);
+    io.to('admin-room').emit('exam:completed', data);
+  });
+
+  // Maintain backwards compatibility for existing hooks
   socket.on('exam:start', (data) => {
     const { employeeId, employeeName, examId } = data;
-    socket.join(`exam-${employeeId}`);
+    socket.join(examId);
     activeSockets.set(String(employeeId), { socketId: socket.id, examId });
-    
-    // Notify admin
     io.to('admin-room').emit('exam:employee-joined', {
       employeeId,
       employeeName,
@@ -421,7 +485,6 @@ io.on('connection', (socket) => {
 
   // WebRTC Signaling: Answer from Admin -> Employee
   socket.on('webrtc:answer', (data) => {
-    // data.to is the employee's socket ID
     io.to(data.to).emit('webrtc:answer', {
       answer: data.answer
     });
@@ -430,27 +493,27 @@ io.on('connection', (socket) => {
   // WebRTC Signaling: ICE Candidate
   socket.on('webrtc:ice-candidate', (data) => {
     if (data.toAdmin) {
-      // Send candidate from Employee to Admin
       io.to('admin-room').emit('webrtc:ice-candidate', {
         employeeId: data.employeeId,
         candidate: data.candidate
       });
     } else if (data.to) {
-      // Send candidate from Admin to Employee
       io.to(data.to).emit('webrtc:ice-candidate', {
         candidate: data.candidate
       });
     }
   });
 
-  // Fallback for older camera Active state, or handling disconnects
   socket.on('exam:frame', (data) => {
-    // If we still use exam:frame for cameraActive status
     io.to('admin-room').emit('exam:frame-update', data);
   });
 
   socket.on('exam:submit', (data) => {
     io.to('admin-room').emit('exam:completed', data);
+  });
+
+  socket.on('candidate-frame', (data) => {
+    io.to('admin-room').emit('admin-live-frame', data);
   });
 
   socket.on('violation:detected', (data) => {
@@ -473,29 +536,33 @@ io.on('connection', (socket) => {
 });
 
   // ── Debug: see exactly what's in in-memory DB right now ─────
-  app.get('/api/debug-db', protect, adminOnly, (req, res) => {
-    const { readDB } = require('./utils/localCache');
-    const db = readDB();
-    const empSample = (db.employees || []).slice(0, 3).map(e => ({
-      _id: e._id, role: e.role, fullName: e.fullName, isActive: e.isActive
-    }));
-    res.json({
-      success: true,
-      sheetsUrl: process.env.GOOGLE_SHEET_URL ? '✅ set' : '❌ MISSING',
-      counts: {
-        employees:   db.employees?.length   || 0,
-        assessments: db.assessments?.length || 0,
-        questions:   db.questions?.length   || 0,
-        results:     db.results?.length     || 0,
-        violations:  db.violations?.length  || 0,
-      },
-      employeeSample: empSample,
-      roleBreakdown: {
-        employee: (db.employees||[]).filter(e => e.role === 'employee').length,
-        admin:    (db.employees||[]).filter(e => e.role === 'admin').length,
-        other:    (db.employees||[]).filter(e => e.role !== 'employee' && e.role !== 'admin').length,
-      }
-    });
+  app.get('/api/debug-db', protect, adminOnly, async (req, res) => {
+    try {
+      const { querySheets } = require('./services/googleSheets');
+      const dbRes = await querySheets('getDatabase');
+      const db = dbRes.data || {};
+      const empSample = (db.employees || []).slice(0, 3).map(e => ({
+        _id: e._id, role: e.role, fullName: e.fullName, isActive: e.isActive
+      }));
+      res.json({
+        success: true,
+        sheetsUrl: process.env.GOOGLE_SHEET_URL ? '✅ set' : '❌ MISSING',
+        counts: {
+          employees:   db.employees?.length   || 0,
+          assessments: db.assessments?.length || 0,
+          questions:   db.questions?.length   || 0,
+          results:     db.results?.length     || 0,
+          violations:  db.violations?.length  || 0,
+        },
+        employeeSample: empSample,
+        roleBreakdown: {
+          employee: (db.employees||[]).filter(e => e.role === 'employee').length,
+          admin:    (db.employees||[]).filter(e => (e.role || '').toLowerCase() === 'admin').length,
+        }
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
   });
 
   // ── Test Google Sheets connectivity ─────────────────────────

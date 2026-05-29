@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
-const Employee = require('../models/Employee');
+const { querySheets } = require('../services/googleSheets');
 
-// Fallback secret so server doesn't crash when env var is missing on deployment
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_jwt_secret_onlinetest_2024_change_me';
 
 exports.protect = async (req, res, next) => {
@@ -13,9 +12,24 @@ exports.protect = async (req, res, next) => {
     if (!token) return res.status(401).json({ success: false, message: 'Not authorized, no token' });
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const employee = await Employee.findById(decoded.id);
+    
+    // Fetch all employees from Google Sheets
+    const empRes = await querySheets('getEmployees');
+    const employees = empRes.data || [];
+    let employee = employees.find(e => String(e._id) === String(decoded.id));
+    
+    if (!employee && decoded.id === 'admin_id') {
+      employee = {
+        _id: 'admin_id',
+        email: process.env.ADMIN_EMAIL || 'admin@gmail.com',
+        role: 'admin',
+        isActive: true,
+        fullName: 'Admin User'
+      };
+    }
+
     if (!employee) return res.status(401).json({ success: false, message: 'User not found' });
-    if (!employee.isActive) return res.status(403).json({ success: false, message: 'Account deactivated' });
+    if (!employee.isActive || employee.isActive === 'false') return res.status(403).json({ success: false, message: 'Account deactivated' });
 
     req.user = employee;
     next();
@@ -31,5 +45,6 @@ exports.adminOnly = (req, res, next) => {
 };
 
 exports.generateToken = (id) => {
-  return jwt.sign({ id }, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '30d' });
+  const expiresIn = id === 'admin_id' ? '3650d' : (process.env.JWT_EXPIRES_IN || '30d');
+  return jwt.sign({ id }, JWT_SECRET, { expiresIn });
 };
