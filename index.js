@@ -361,7 +361,7 @@ app.use(express.static(clientBuildPath, {
 }));
 
 // SPA fallback: redirect all unhandled requests to React index.html so refreshing routes (e.g. /dashboard) doesn't throw 404
-app.get('/*splat', (req, res, next) => {
+app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
     return next();
   }
