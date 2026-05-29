@@ -54,13 +54,9 @@ const compression = require('compression');
 app.use(compression());
 
 app.use(cors({
-  origin: [
-    process.env.CLIENT_URL || "http://localhost:3001",
-    "http://localhost:3000",
-    "https://caponlinetest.onrender.com"
-  ],
+  origin: true,
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE"]
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 }));
 // Rate limiting
 const limiter = rateLimit({
