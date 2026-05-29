@@ -1,6 +1,6 @@
 const cache = new Map();
 
-const apiCacheMiddleware = (duration = 30000) => {
+const apiCacheMiddleware = (duration = 1000) => {
   return (req, res, next) => {
     if (req.method !== 'GET') return next();
 
