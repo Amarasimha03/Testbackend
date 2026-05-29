@@ -1,6 +1,6 @@
 // Use native fetch (Node 18+)
 
-const CACHE_TTL_MS = 60000; // 60 seconds
+const CACHE_TTL_MS = 1000; // 1 second
 const cache = new Map();
 
 // Helper to determine if an action should be cached
