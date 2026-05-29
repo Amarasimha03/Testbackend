@@ -382,12 +382,9 @@ async function startServer() {
   const io = new Server(server, {
     transports: ["websocket", "polling"],
     cors: {
-      origin: [
-        process.env.CLIENT_URL || "https://onlinetest-vpb4.onrender.com",
-        "https://onlinetest-esyq.onrender.com",
-        "https://caponlinetest.onrender.com",
-        "http://localhost:3001"
-      ],
+      origin: function (origin, callback) {
+        callback(null, true);
+      },
       methods: ["GET", "POST"],
       credentials: true
     }
