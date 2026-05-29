@@ -52,15 +52,20 @@ exports.querySheets = async (action, payload = {}) => {
     for (const key of cache.keys()) if (key.startsWith('getQuestions')) cache.delete(key);
   }
 
-  // 3. Not cached or write action, hit Google Sheets
-  const body = { action, ...payload };
+  // 3. Not cached or write action, hit Google Sheets (GAS compatible form-urlencoded format)
   let parsed;
 
   try {
-    const res = await fetch(sheetUrl, {
+    const url = new URL(sheetUrl);
+    url.searchParams.set('action', action);
+
+    const formBody = new URLSearchParams();
+    formBody.append('data', JSON.stringify(payload));
+
+    const res = await fetch(url.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formBody.toString()
     });
 
     const text = await res.text();
