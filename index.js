@@ -539,7 +539,9 @@ async function startServer() {
       io.to('admin-room').emit('webrtc:offer', {
         employeeId: data.employeeId,
         offer: data.offer,
-        socketId: socket.id
+        socketId: socket.id,
+        cameraStreamId: data.cameraStreamId,
+        screenStreamId: data.screenStreamId
       });
     });
 
