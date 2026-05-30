@@ -445,6 +445,25 @@ async function startServer() {
     // Admin joins a dedicated room
     socket.on('admin:join', () => {
       socket.join('admin-room');
+
+      // ✅ Send the current list of active exams immediately to the joining admin
+      // This restores the admin's view after navigation/re-login without waiting for renegotiation
+      const activeExamList = [];
+      for (const [empId, sData] of activeSockets.entries()) {
+        activeExamList.push({
+          employeeId: empId,
+          employeeName: sData.employeeName || 'Employee',
+          examId: sData.examId,
+          socketId: sData.socketId,
+          joinedAt: sData.joinedAt || new Date(),
+          cameraActive: true,
+        });
+      }
+      if (activeExamList.length > 0) {
+        socket.emit('admin:active-exams', activeExamList);
+        console.log(`[Server] admin:join — sent ${activeExamList.length} active exam(s) to admin ${socket.id}`);
+      }
+
       // Request active employee renegotiation when admin returns/joins
       io.emit('webrtc:request-renegotiate');
     });
@@ -458,7 +477,7 @@ async function startServer() {
     socket.on('join-exam', (data) => {
       const { examId, userId, employeeName } = data;
       socket.join(examId);
-      activeSockets.set(String(userId), { socketId: socket.id, examId });
+      activeSockets.set(String(userId), { socketId: socket.id, examId, employeeName: employeeName || 'Employee', joinedAt: new Date() });
 
       // Notify admin using default fallback and spec room
       io.to('admin-room').emit('exam:employee-joined', {
@@ -503,7 +522,7 @@ async function startServer() {
     socket.on('exam:start', (data) => {
       const { employeeId, employeeName, examId } = data;
       socket.join(examId);
-      activeSockets.set(String(employeeId), { socketId: socket.id, examId });
+      activeSockets.set(String(employeeId), { socketId: socket.id, examId, employeeName: employeeName || 'Employee', joinedAt: new Date() });
       io.to('admin-room').emit('exam:employee-joined', {
         employeeId,
         employeeName,
