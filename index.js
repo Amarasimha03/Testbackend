@@ -355,7 +355,7 @@ async function startServer() {
         })
       ]);
 
-      const io = req.app.get('io');
+      const io = req.app.get('io') || global.io;
       if (io) {
         io.to('admin-room').emit('exam:completed', {
           employeeId: empId.toString(),
@@ -363,6 +363,8 @@ async function startServer() {
           terminationReason: reason || 'Camera Violations',
           status: result.status,
         });
+        console.log('📡 Broadcasting global db:sync signal on exam submission');
+        io.emit('db:sync');
       }
 
       // Clear cache so the dashboard reflects the completed exam immediately
