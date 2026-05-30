@@ -39,7 +39,7 @@ router.get('/', protect, async (req, res) => {
         webrtcConnected: false,
         socketId: isCorrectExam ? socketData.socketId : '',
       };
-    }).filter(exam => exam.socketId !== ''); // Only show if they are currently connected
+    });
 
     res.json(activeExams);
   } catch (err) {
