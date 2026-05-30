@@ -1,5 +1,8 @@
 const { querySheets } = require('../services/googleSheets');
 
+// Statuses considered "complete" — the only ones shown on the Results page
+const COMPLETED_STATUSES = ['submitted', 'auto-submitted', 'completed', 'graded'];
+
 exports.getResults = async (req, res) => {
   try {
     const { assessmentId, employeeId } = req.query;
@@ -15,11 +18,20 @@ exports.getResults = async (req, res) => {
     const employees = empRes.data || [];
     const assessments = assRes.data || [];
 
+    // ✅ For employees: show only their own results
+    if (req.user.role === 'employee') {
+      results = results.filter(r => String(r.employeeMongoId || r.employee) === String(req.user._id));
+    }
+
+    // ✅ For admins: show only COMPLETED exams — never in-progress or not-started
+    if (req.user.role === 'admin') {
+      results = results.filter(r => COMPLETED_STATUSES.includes(r.status));
+    }
+
     if (assessmentId) results = results.filter(r => String(r.assessmentId || r.assessment) === String(assessmentId));
     if (employeeId) results = results.filter(r => String(r.employeeMongoId || r.employee) === String(employeeId));
-    if (req.user.role === 'employee') results = results.filter(r => String(r.employeeMongoId || r.employee) === String(req.user._id));
     
-    // Sort
+    // Sort by most recently submitted first
     results.sort((a, b) => new Date(b.submittedAt || b.createdAt || 0) - new Date(a.submittedAt || a.createdAt || 0));
 
     const mapped = results.map(r => {
@@ -29,8 +41,26 @@ exports.getResults = async (req, res) => {
       const a = assessments.find(a => String(a._id) === String(aId));
       return {
         ...r,
-        employee: e ? { _id: e._id, fullName: e.fullName, email: e.email, department: e.department } : { _id: eId, fullName: r.employeeName || 'Unknown', email: 'No Email', department: 'General' },
-        assessment: a ? { _id: a._id, title: a.title, passingScore: a.passingScore } : aId
+        // ✅ Pull full employee profile from Employee module — with "Employee Not Found" fallback
+        employee: e
+          ? {
+              _id: e._id,
+              employeeId: e.employeeId || e._id,
+              fullName: e.fullName,
+              email: e.email,
+              department: e.department || 'General',
+              designation: e.designation || '',
+            }
+          : {
+              _id: eId,
+              employeeId: eId,
+              fullName: r.employeeName || 'Employee Not Found',
+              email: r.employeeEmail || '',
+              department: 'N/A',
+              designation: '',
+              notFound: true,        // flag for frontend to render fallback label
+            },
+        assessment: a ? { _id: a._id, title: a.title, passingScore: a.passingScore } : { _id: aId, title: r.assessmentTitle || 'Exam' }
       };
     });
 
