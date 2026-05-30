@@ -17,10 +17,10 @@ router.get("/result/:resultId", protect, apiCacheMiddleware(), async (req, res) 
     const result = (resRes.data || []).find(r => String(r._id || r.id) === String(req.params.resultId));
     if (!result) return res.status(404).json({ error: "Result not found" });
 
-    const e = (empRes.data || []).find(e => String(e._id || e.id) === String(result.employee));
+    const e = (empRes.data || []).find(e => String(e._id || e.id) === String(result.employeeMongoId || result.employee));
     result.employee = e || result.employee;
 
-    const a = (assRes.data || []).find(a => String(a._id || a.id) === String(result.assessment));
+    const a = (assRes.data || []).find(a => String(a._id || a.id) === String(result.assessmentId || result.assessment));
     if (a) {
       const assessmentId = a._id || a.id;
       const questions = (qRes.data || []).filter(q => String(q.assessment) === String(assessmentId) || String(q.assessmentId) === String(assessmentId));
@@ -122,13 +122,13 @@ router.get("/results", protect, apiCacheMiddleware(), async (req, res) => {
     const employees = empRes.data || [];
     const assessments = assRes.data || [];
     
-    if (req.query.examId) results = results.filter(r => String(r.assessment) === String(req.query.examId));
-    if (req.query.employeeId) results = results.filter(r => String(r.employee) === String(req.query.employeeId));
-    if (req.user.role === 'employee') results = results.filter(r => String(r.employee) === String(req.user._id));
+    if (req.query.examId) results = results.filter(r => String(r.assessmentId || r.assessment) === String(req.query.examId));
+    if (req.query.employeeId) results = results.filter(r => String(r.employeeMongoId || r.employee) === String(req.query.employeeId));
+    if (req.user.role === 'employee') results = results.filter(r => String(r.employeeMongoId || r.employee) === String(req.user._id));
 
     const mapped = results.map(r => {
-      const e = employees.find(e => String(e._id) === String(r.employee));
-      const a = assessments.find(a => String(a._id) === String(r.assessment));
+      const e = employees.find(e => String(e._id) === String(r.employeeMongoId || r.employee));
+      const a = assessments.find(a => String(a._id) === String(r.assessmentId || r.assessment));
       return {
         resultId: r._id,
         exam: { title: a ? a.title : '' },
