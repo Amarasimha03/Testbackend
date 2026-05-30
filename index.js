@@ -299,7 +299,7 @@ async function startServer() {
         correctAnswersCount = rAnswers.filter(a => a.isCorrect === true || a.isCorrect === 'true').length;
         wrongAnswersCount = rAnswers.length - correctAnswersCount;
       }
-
+      const isUserCancelled = reason === 'User Cancelled Exam';
       if (isUserCancelled) {
         result.status = 'cancelled';
       } else if (autoSubmit === true || autoSubmit === 'true' || reason === 'Time Expired' || reason === 'Camera Violations') {
